@@ -7,8 +7,11 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;padding:12px;text-align:center}
 #clock{font-size:56px;font-weight:700}
-#state{font-size:22px;margin:6px 0;padding:10px;border-radius:10px;background:var(--card)}
-#state.alarm{background:var(--bad)}
+#state{font-size:clamp(34px,10vw,72px);font-weight:800;line-height:1.1;margin:10px 0;padding:22px 10px;border-radius:14px;background:var(--card)}
+#state.red{background:#d11;color:#fff}
+#state.yellow{background:#fc0;color:#111}
+#state.green{background:#1a7f2e;color:#fff}
+#now{font-size:18px}
 .mut{color:var(--mut);font-size:14px}
 .card{background:var(--card);border-radius:10px;padding:10px;margin:10px 0;text-align:left}
 button,select,input[type=password]{font:inherit;padding:10px;margin:4px 0;border-radius:8px;border:1px solid #444;background:#2a2a2a;color:var(--fg);max-width:100%}
@@ -38,7 +41,7 @@ input[type=range]{width:100%}
 <button id="impS">Імпорт сигналів (папка 1)</button>
 <div id="prog" class="mut"></div>
 <div id="maps"></div>
-<button id="tA">Тест: тривога</button><button id="tC">Тест: відбій</button><button id="tS">Тест: хвилина мовчання</button>
+<button id="tA">Тест: червона</button><button id="tY">Тест: жовта</button><button id="tC">Тест: відбій</button><button id="tS">Тест: хвилина мовчання</button>
 <button id="reset">Скинути позицію в музиці</button>
 </div>
 <input type="file" id="fM" accept="audio/*,.mp3" multiple hidden>
@@ -46,7 +49,7 @@ input[type=range]{width:100%}
 
 <script>
 const CFG={
-  API_URL:'https://alerts-proxy.duzyak1232.workers.dev', // або адреса вашого проксі
+  API_URL:'https://alerts-proxy.duzyak1232.workers.dev', // або адреса вашого проксі // замініть на адресу вашого Cloudflare Worker (токен тоді не потрібен)
   LOCATION_UID:'',                 // за бажанням: uid Хмельницького району з alerts.in.ua
   RAION:'Хмельницький район',
   OBLAST:'Хмельницька область',
@@ -72,7 +75,7 @@ const nsort=a=>a.sort((x,y)=>x.localeCompare(y,undefined,{numeric:true,sensitivi
 // ---------- стан ----------
 const M=new Audio(),V=new Audio();
 M.preload='auto';
-let tracks=[],ti=LS.get('ti',0),started=false,voice=null,queue=[],alertOn=null,mUrl=null,vUrl=null,fails=0;
+let tracks=[],ti=LS.get('ti',0),started=false,voice=null,queue=[],lvl,playedAlarm=false,mUrl=null,vUrl=null,fails=0;
 let map=LS.get('map',{}),sigNames=[];
 const vol={m:LS.get('vm',100),s:LS.get('vs',100)};
 function applyVol(){M.volume=vol.m/100;V.volume=vol.s/100;$('mv').textContent=vol.m;$('sv').textContent=vol.s;$('mvol').value=vol.m;$('svol').value=vol.s}
@@ -81,10 +84,14 @@ $('svol').oninput=e=>{vol.s=+e.target.value;LS.set('vs',vol.s);applyVol()};
 applyVol();
 
 function setState(){
-  const s=$('state');
-  if(voice){s.className=voice==='alarm'?'alarm':'';s.textContent={alarm:'🚨 ТРИВОГА',clear:'✅ Відбій',silence:'🕯 Хвилина мовчання'}[voice]}
-  else{s.className='';s.textContent=started?(alertOn?'Тривога триває':'Музика'):'Очікування запуску'}
-  $('now').textContent=!voice&&tracks.length?`${ti+1}/${tracks.length}: ${tracks[ti]}`:'';
+  let cls='',t='';
+  if(voice==='silence')t='🕯 ХВИЛИНА МОВЧАННЯ';
+  else if(voice==='clear'){cls='green';t='✅ ВІДБІЙ ТРИВОГИ'}
+  else if(lvl==='red'||voice==='alarm'){cls='red';t='🔴 ЧЕРВОНА ТРИВОГА'}
+  else if(lvl==='yellow'||voice==='alarm_y'){cls='yellow';t='🟡 ЖОВТА ТРИВОГА'}
+  else t=started?'Тривоги немає':'Очікування запуску';
+  $('state').className=cls;$('state').textContent=t;
+  $('now').textContent=!voice&&tracks.length?`♪ ${ti+1}/${tracks.length}: ${tracks[ti]}`:'';
 }
 
 // ---------- музика ----------
@@ -118,11 +125,13 @@ M.addEventListener('ended',()=>LS.set('tp',0));
 // ---------- голосові сигнали (черга з пріоритетом) ----------
 async function pump(){
   if(voice)return;
-  const k=['silence','alarm','clear'].find(x=>queue.includes(x));
+  const k=['silence','alarm','alarm_y','clear'].find(x=>queue.includes(x));
   if(!k){playMusic();return}
   queue=queue.filter(x=>x!==k);
-  const b=map[k]?await getB('sig',map[k]):null;
+  const f=map[k]||(k==='alarm_y'?map.alarm:'');
+  const b=f?await getB('sig',f):null;
   if(!b){pump();return}
+  if(k==='alarm'||k==='alarm_y')playedAlarm=true;
   voice=k;M.pause();setState();
   if(vUrl)URL.revokeObjectURL(vUrl);
   vUrl=URL.createObjectURL(b);V.src=vUrl;applyVol();
@@ -142,9 +151,10 @@ function isMine(a){
 function apiStatus(ok,txt){$('dot').style.background=ok?'var(--ok)':'var(--bad)';$('api').textContent='API: '+txt}
 async function poll(){
   const tok=LS.get('tok','');
-  if(!tok){apiStatus(false,'введіть токен');return}
+  const direct=CFG.API_URL.includes('api.alerts.in.ua');
+  if(direct&&!tok){apiStatus(false,'введіть токен');return}
   try{
-    const u=CFG.API_URL+(CFG.API_URL.includes('?')?'&':'?')+'token='+encodeURIComponent(tok);
+    const u=direct?CFG.API_URL+'?token='+encodeURIComponent(tok):CFG.API_URL;
     let r,to;
     if(window.AbortController){
       const ac=new AbortController();to=setTimeout(()=>ac.abort(),10000);
@@ -152,13 +162,19 @@ async function poll(){
     }else r=await fetch(u);
     if(!r.ok)throw new Error('HTTP '+r.status);
     const j=await r.json();
-    const on=(j.alerts||[]).some(isMine);
-    apiStatus(true,(on?'тривога':'тихо')+' · '+new Date().toLocaleTimeString('uk-UA'));
-    if(alertOn===null){alertOn=on}                // перший запит — без звуку
-    else if(on&&!alertOn){alertOn=true;enqueue('alarm')}
-    else if(!on&&alertOn){alertOn=false;
-      if(queue.includes('alarm'))queue=queue.filter(x=>x!=='alarm'); // тривога ще не грала — відбій не потрібен
-      else enqueue('clear')}
+    const on=(j.alerts||[]).filter(isMine);
+    const nl=on.length?(on.some(x=>x.alert_level!=='yellow')?'red':'yellow'):'none';
+    apiStatus(true,({none:'тихо',red:'червона тривога',yellow:'жовта тривога'})[nl]+' · '+new Date().toLocaleTimeString('uk-UA'));
+    const old=lvl;lvl=nl;
+    if(old!==undefined&&old!==nl){
+      if(nl==='none'){
+        queue=queue.filter(x=>x!=='alarm'&&x!=='alarm_y');
+        if(playedAlarm)enqueue('clear');
+        playedAlarm=false;
+      }else if(old==='none')enqueue(nl==='red'?'alarm':'alarm_y');
+      else if(nl==='red'){queue=queue.filter(x=>x!=='alarm_y');enqueue('alarm')}
+      else{queue=queue.filter(x=>x!=='alarm');enqueue('alarm_y')}
+    }
     setState();
   }catch(e){apiStatus(false,'немає зв’язку ('+(e.name||'')+': '+(e.message||e)+')')}
 }
@@ -193,13 +209,13 @@ $('impM').onclick=()=>$('fM').click();$('impS').onclick=()=>$('fS').click();
 $('fM').onchange=e=>importFiles('music',e.target.files);
 $('fS').onchange=e=>importFiles('sig',e.target.files);
 
-const RX={alarm:/тривог|alarm|alert|siren/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
-const LBL={alarm:'Тривога',clear:'Відбій',silence:'Хвилина мовчання'};
+const RX={alarm:/тривог|alarm|alert|siren/i,alarm_y:/жовт|yellow/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
+const LBL={alarm:'Тривога (червона)',alarm_y:'Тривога жовта (необов’язково)',clear:'Відбій',silence:'Хвилина мовчання'};
 async function refresh(){
   tracks=nsort(await keys('music'));sigNames=nsort(await keys('sig'));
   $('mcount').textContent=tracks.length;
   for(const k of Object.keys(RX)){
-    if(!map[k]||!sigNames.includes(map[k]))map[k]=sigNames.find(n=>RX[k].test(n))||'';
+    if(!map[k]||!sigNames.includes(map[k]))map[k]=sigNames.find(n=>RX[k].test(n)&&(k==='alarm_y'||!RX.alarm_y.test(n)))||'';
   }
   LS.set('map',map);
   $('maps').innerHTML='';
@@ -216,7 +232,7 @@ async function refresh(){
 }
 
 // ---------- кнопки ----------
-$('tA').onclick=()=>enqueue('alarm');$('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
+$('tA').onclick=()=>enqueue('alarm');$('tY').onclick=()=>enqueue('alarm_y');$('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
 $('reset').onclick=()=>{LS.set('ti',0);LS.set('tp',0);ti=0;M.removeAttribute('src');playMusic()};
 $('savetok').onclick=()=>{LS.set('tok',$('token').value.trim());$('token').value='';poll()};
 $('start').onclick=()=>{started=true;$('start').style.display='none';pump()};
