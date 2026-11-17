@@ -22,8 +22,6 @@ button{cursor:pointer}
 input[type=range]{width:100%}
 #start{position:fixed;inset:0;background:#000d;font-size:28px;z-index:9;display:none;width:100%;border:0}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--mut);margin-right:6px}
-.radio-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.radio-row select{flex:1;min-width:200px}
 </style></head><body>
 <button id="start">▶ Натисни для запуску</button>
 <div id="clock">--:--:--</div>
@@ -36,24 +34,23 @@ input[type=range]{width:100%}
 </div>
 <div class="mut"><span class="dot" id="dot"></span><span id="api">API: ще не перевірено</span></div>
 
+<!-- Гучність -->
 <div class="card">
 <b>Гучність</b><br>
 Музика: <span id="mv"></span>%<input type="range" id="mvol" min="0" max="100">
 Сигнали: <span id="sv"></span>%<input type="range" id="svol" min="0" max="100">
 </div>
 
+<!-- Радіо онлайн -->
 <div class="card">
-<b>📻 Онлайн-радіо</b><br>
-<div class="radio-row">
-  <select id="radioSelect">
-    <option value="">— виберіть станцію —</option>
-  </select>
-  <button id="radioPlay">▶ Грати</button>
-  <button id="radioStop">⏹ Зупинити</button>
-</div>
+<b>Радіо онлайн</b><br>
+<select id="radioSelect" style="width:100%"></select>
+<button id="radioPlay">▶ Грати</button>
+<button id="radioStop">⏹ Зупинити</button>
 <div class="mut" id="radioStatus"></div>
 </div>
 
+<!-- Налаштування -->
 <div class="card">
 <b>Налаштування</b><br>
 <div id="maps"></div>
@@ -70,12 +67,12 @@ input[type=range]{width:100%}
 <script>
 const CFG={
   API_URL:'https://alerts-proxy.duzyak1232.workers.dev',
-  LOCATION_UID:'',                 // за бажанням: uid Хмельницького району з alerts.in.ua
+  LOCATION_UID:'',
   RAION:'Хмельницький район',
   OBLAST:'Хмельницька область',
   POLL_MS:20000,
   SILENCE:'08:58',
-  RELOAD_HOUR:4                    // щоденне перезавантаження о 04:00
+  RELOAD_HOUR:4
 };
 const $=id=>document.getElementById(id);
 const LS={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch(e){return d}},
@@ -93,19 +90,19 @@ const getB=(s,k)=>tx(s,'readonly',o=>o.get(k));
 const nsort=a=>a.sort((x,y)=>x.localeCompare(y,undefined,{numeric:true,sensitivity:'base'}));
 
 // ---------- стан ----------
-const M=new Audio();V=new Audio();R=new Audio();
-M.preload='auto';V.preload='auto';R.preload='none';
+const M=new Audio(),V=new Audio(),R=new Audio();   // M – музика, V – сигнали, R – радіо
+M.preload='auto';
+R.preload='none';
 let tracks=[],ti=LS.get('ti',0),started=false,voice=null,queue=[],lvl,playedAlarm=false,mUrl=null,vUrl=null,fails=0;
 let userPaused=false,mode=LS.get('mode','seq'),hist=[];
 let map=LS.get('map',{}),sigNames=[];
-let radioMode=false; // чи грає радіо
 const KEY={red:'alarm_r',yellow:'alarm_y',normal:'alarm'};
 const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
 const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
 const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання'};
-// Стандартна гучність: музика 90%, сигнали 100%
+// Гучність за замовчуванням: музика 90 %, сигнали 100 %
 const vol={m:LS.get('vm',90),s:LS.get('vs',100)};
-function applyVol(){M.volume=vol.m/100;V.volume=vol.s/100;R.volume=vol.m/100;
+function applyVol(){M.volume=vol.m/100;V.volume=vol.s/100;R.volume=vol.m/100;   // радіо – як музика
   $('mv').textContent=vol.m;$('sv').textContent=vol.s;$('mvol').value=vol.m;$('svol').value=vol.s}
 $('mvol').oninput=e=>{vol.m=+e.target.value;LS.set('vm',vol.m);applyVol()};
 $('svol').oninput=e=>{vol.s=+e.target.value;LS.set('vs',vol.s);applyVol()};
@@ -120,12 +117,8 @@ function setState(){
   else t=started?'Тривоги немає':'Очікування запуску';
   $('state').className=cls;$('state').textContent=t;
   if(voice){$('now').textContent='🔔 '+LBL[voice];$('cnt').textContent=''}
-  else if(radioMode){ // показуємо назву станції
-    const opt=$('radioSelect').selectedOptions[0];
-    $('now').textContent='📻 '+(opt?opt.textContent:'Радіо');
-    $('cnt').textContent='';
-  }
-  else if(tracks.length){$('now').textContent='♪ '+tracks[ti].replace(/\.[^.]+$/,'');$('cnt').textContent=`${ti+1} / ${tracks.length}`}
+  else if(tracks.length && !R.src){$('now').textContent='♪ '+tracks[ti].replace(/\.[^.]+$/,'');$('cnt').textContent=`${ti+1} / ${tracks.length}`}
+  else if(R.src){$('now').textContent='📻 '+ (R.dataset.name||'Радіо');$('cnt').textContent=''}
   else{$('now').textContent='';$('cnt').textContent=''}
   $('pp').textContent=userPaused?'▶ Грати':'⏸ Стоп';
   $('mode').textContent=mode==='rnd'?'🔀 Випадково':'🔁 По порядку';
@@ -144,7 +137,7 @@ async function loadTrack(i,pos){
   return true;
 }
 async function playMusic(){
-  if(voice||userPaused||!tracks.length||radioMode)return;
+  if(voice||userPaused||!tracks.length||R.src)return;   // не грає, якщо увімкнено радіо
   try{
     if(!M.src){await loadTrack(ti,LS.get('tp',0))}
     await M.play();started=true;$('start').style.display='none';
@@ -177,20 +170,13 @@ setInterval(()=>{if(!M.paused&&M.currentTime)LS.set('tp',Math.floor(M.currentTim
 async function pump(){
   if(voice)return;
   const k=['silence','alarm_r','alarm_y','alarm','clear'].find(x=>queue.includes(x));
-  if(!k){ // якщо сигналів немає — відновлюємо музику або радіо
-    if(radioMode){ // якщо був режим радіо, відновлюємо його
-      if(R.src&&R.paused){try{await R.play()}catch(e){}}
-    } else {
-      playMusic();
-    }
-    return;
-  }
+  if(!k){playMusic();return}
   queue=queue.filter(x=>x!==k);
   const f=map[k]||(k.startsWith('alarm')?map.alarm:'');
   const b=f?await getB('sig',f):null;
   if(!b){pump();return}
   if(k.startsWith('alarm'))playedAlarm=true;
-  voice=k;M.pause();R.pause();setState(); // зупиняємо і музику, і радіо
+  voice=k;M.pause();R.pause();R.removeAttribute('src');setState();   // зупиняємо і музику, і радіо
   if(vUrl)URL.revokeObjectURL(vUrl);
   vUrl=URL.createObjectURL(b);V.src=vUrl;applyVol();
   V.play().catch(()=>end());
@@ -230,7 +216,7 @@ async function poll(){
       if(nl==='none'){
         if(playedAlarm)enqueue('clear');
         playedAlarm=false;
-      }else enqueue(KEY[nl]);            // нова тривога або зміна кольору
+      }else enqueue(KEY[nl]);
     }
     setState();
   }catch(e){apiStatus(false,'немає зв’язку ('+(e.name||'')+': '+(e.message||e)+')')}
@@ -249,10 +235,10 @@ setInterval(()=>{
 // ---------- контроль: музика не має стояти без причини ----------
 let lastT=-1,still=0;
 setInterval(()=>{
-  if(!started||userPaused||voice||queue.length||!tracks.length||radioMode)return;
+  if(!started||userPaused||voice||queue.length||!tracks.length||R.src)return;   // якщо грає радіо – не втручаємось
   if(M.error){still=0;goNext();return}
   if(M.paused||M.ended||!M.src){still=0;playMusic();return}
-  if(M.currentTime===lastT){if(++still>=4){still=0;goNext()}}   // завис на ~12 с
+  if(M.currentTime===lastT){if(++still>=4){still=0;goNext()}}
   else{still=0;lastT=M.currentTime}
 },3000);
 
@@ -298,73 +284,6 @@ async function refresh(){
   setState();
 }
 
-// ---------- РАДІО ----------
-const RADIO_STATIONS = [
-  { name: '🇺🇦 Українське радіо (Перший канал)', url: 'https://radio.ukr.radio/ur1-mp3' },
-  { name: '🎵 Радіо Промінь', url: 'https://radio.ukr.radio/ur2-mp3' },
-  { name: '🎭 Радіо Культура', url: 'https://radio.ukr.radio/ur3-mp3' },
-  { name: '🔥 Хіт FM', url: 'https://www.online.hitfm.ua/HitFM' },
-  { name: '🎸 Radio ROKS', url: 'https://online.radioroks.ua/RadioROKS_NewRock_HD' },
-  { name: '🚀 Радіо Байрактар', url: 'https://online.radiobayraktar.ua/' },
-  { name: '🎉 Радіо П’ятниця', url: 'http://cast.radiopyatnica.com.ua:8000/radiopyatnica' },
-  { name: '📡 NovaLine', url: 'https://stream.novaline.net.ua/Novaline_320' },
-];
-
-const radioSelect = $('radioSelect');
-RADIO_STATIONS.forEach((st, idx) => {
-  const opt = document.createElement('option');
-  opt.value = st.url;
-  opt.textContent = st.name;
-  radioSelect.appendChild(opt);
-});
-
-function setRadioStatus(txt, isError = false) {
-  $('radioStatus').textContent = txt;
-  $('radioStatus').style.color = isError ? 'var(--bad)' : 'var(--mut)';
-}
-
-async function playRadio() {
-  const url = radioSelect.value;
-  if (!url) { setRadioStatus('Виберіть станцію', true); return; }
-  if (voice) { setRadioStatus('Зачекайте, грає сигнал тривоги…', true); return; }
-  try {
-    // Зупиняємо локальну музику
-    M.pause();
-    userPaused = false;
-    radioMode = true;
-    if (R.src) R.pause();
-    R.src = url;
-    R.load();
-    await R.play();
-    started = true;
-    $('start').style.display = 'none';
-    setRadioStatus('Грає: ' + radioSelect.selectedOptions[0].textContent);
-    setState();
-  } catch (e) {
-    radioMode = false;
-    setRadioStatus('Помилка відтворення: ' + (e.message || e), true);
-    setState();
-  }
-}
-
-function stopRadio() {
-  R.pause();
-  R.removeAttribute('src');
-  radioMode = false;
-  setRadioStatus('Радіо зупинено');
-  setState();
-  // Відновлюємо локальну музику, якщо є треки
-  if (tracks.length && !voice) playMusic();
-}
-
-$('radioPlay').onclick = playRadio;
-$('radioStop').onclick = stopRadio;
-R.onerror = () => {
-  radioMode = false;
-  setRadioStatus('Потік недоступний. Спробуйте іншу станцію.', true);
-  setState();
-};
-
 // ---------- кнопки ----------
 $('tR').onclick=()=>enqueue('alarm_r');$('tY').onclick=()=>enqueue('alarm_y');$('tA').onclick=()=>enqueue('alarm');
 $('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
@@ -373,11 +292,6 @@ $('start').onclick=()=>{started=true;$('start').style.display='none';pump()};
 document.addEventListener('click',()=>{if(!started){started=true;pump()}},{once:true});
 
 $('pp').onclick=()=>{
-  if(radioMode){ // якщо грає радіо, кнопка "Стоп" зупиняє його
-    if(R.paused){R.play().catch(()=>{})}
-    else{R.pause()}
-    return;
-  }
   if(userPaused){userPaused=false;started=true;playMusic()}
   else{userPaused=true;M.pause()}
   setState();
@@ -386,6 +300,77 @@ $('next').onclick=()=>{userPaused=false;started=true;goNext()};
 $('prev').onclick=()=>{userPaused=false;started=true;goTo(pickPrev())};
 $('mode').onclick=()=>{mode=mode==='rnd'?'seq':'rnd';hist=[];LS.set('mode',mode);setState()};
 
+// ---------- РАДІО ОНЛАЙН ----------
+const RADIO_STATIONS = [
+  { name: 'Misto FM Deep',      url: 'https://stream.mistofm.com/listen/misto_fm_deep/radio.mp3' },
+  { name: 'Хіт FM',            url: 'https://www.hitfm.ua/HitFM.m3u' },
+  { name: 'Kiss FM',           url: 'https://online.kissfm.ua/KissFM_Digital_HD' },
+  { name: 'Radio ROKS',        url: 'https://online.radioroks.ua/RadioROKS' },
+  { name: 'Наше Радіо',        url: 'https://online.nasheradio.ua/NasheRadio' },
+  { name: 'Lux FM',            url: 'https://streamvideo.luxnet.ua/lux/smil:lux.stream.smil/playlist.m3u8' },
+  { name: 'Радіо Промінь',     url: 'https://radio.nrcu.gov.ua:8443/promin' },
+  { name: 'Країна ФМ',         url: 'http://185.65.245.34:8000/kiev' },
+  { name: 'Армія FM',          url: 'https://icecast.armyfm.com.ua:8443/ArmyFM' },
+  { name: 'Радіо 1',           url: 'https://live.radio1.com.ua/liveradio64' }
+];
+
+// заповнюємо випадаючий список
+(function fillRadioSelect(){
+  const sel = $('radioSelect');
+  sel.innerHTML = RADIO_STATIONS.map((s,i)=>`<option value="${i}">${s.name}</option>`).join('');
+})();
+
+$('radioPlay').onclick = async () => {
+  const idx = +$('radioSelect').value;
+  const st  = RADIO_STATIONS[idx];
+  if (!st) return;
+  // зупиняємо музику та сигнали, якщо вони грають
+  M.pause(); M.removeAttribute('src');
+  V.pause(); V.removeAttribute('src');
+  voice = null; queue = [];
+  userPaused = false;
+  // запускаємо радіо
+  R.src = st.url;
+  R.dataset.name = st.name;
+  R.volume = vol.m / 100;
+  try {
+    await R.play();
+    $('radioStatus').textContent = 'Грає: ' + st.name;
+    started = true;
+    $('start').style.display = 'none';
+  } catch (e) {
+    $('radioStatus').textContent = 'Помилка: ' + (e.message || e);
+  }
+  setState();
+};
+
+$('radioStop').onclick = () => {
+  R.pause();
+  R.removeAttribute('src');
+  R.dataset.name = '';
+  $('radioStatus').textContent = '';
+  // повертаємось до музики, якщо вона є
+  if (tracks.length) {
+    playMusic();
+  } else {
+    setState();
+  }
+};
+
+// якщо радіо зупинилося саме (наприклад, потік обірвався)
+R.onerror = () => {
+  $('radioStatus').textContent = 'Потік недоступний';
+  R.removeAttribute('src');
+  setState();
+};
+R.onended = () => {
+  // для потоків 'ended' зазвичай не виникає, але на всяк випадок
+  $('radioStatus').textContent = '';
+  R.removeAttribute('src');
+  setState();
+};
+
+// ---------- ініціалізація ----------
 (async()=>{
   try{await navigator.storage.persist()}catch(e){}
   await refresh();
