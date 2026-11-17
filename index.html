@@ -10,6 +10,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-seri
 #state{font-size:clamp(34px,10vw,72px);font-weight:800;line-height:1.1;margin:10px 0;padding:22px 10px;border-radius:14px;background:var(--card)}
 #state.red{background:#d11;color:#fff}
 #state.yellow{background:#fc0;color:#111}
+#state.orange{background:#e67300;color:#fff}
 #state.green{background:#1a7f2e;color:#fff}
 #now{font-size:18px}
 .mut{color:var(--mut);font-size:14px}
@@ -34,14 +35,12 @@ input[type=range]{width:100%}
 
 <div class="card">
 <b>Налаштування</b><br>
-<input type="password" id="token" placeholder="Токен alerts.in.ua" style="width:100%">
-<button id="savetok">Зберегти токен</button>
+<div id="maps"></div>
 <div class="mut">Музика: <span id="mcount">0</span> файлів. Сховище: <span id="quota">?</span></div>
 <button id="impM">Імпорт музики (папка 0)</button>
 <button id="impS">Імпорт сигналів (папка 1)</button>
 <div id="prog" class="mut"></div>
-<div id="maps"></div>
-<button id="tA">Тест: червона</button><button id="tY">Тест: жовта</button><button id="tC">Тест: відбій</button><button id="tS">Тест: хвилина мовчання</button>
+<button id="tR">Тест: червона</button><button id="tY">Тест: жовта</button><button id="tA">Тест: звичайна</button><button id="tC">Тест: відбій</button><button id="tS">Тест: хвилина мовчання</button>
 <button id="reset">Скинути позицію в музиці</button>
 </div>
 <input type="file" id="fM" accept="audio/*,.mp3" multiple hidden>
@@ -49,7 +48,7 @@ input[type=range]{width:100%}
 
 <script>
 const CFG={
-  API_URL:'https://alerts-proxy.duzyak1232.workers.dev', // або адреса вашого проксі // замініть на адресу вашого Cloudflare Worker (токен тоді не потрібен)
+  API_URL:'https://alerts-proxy.duzyak1232.workers.dev',
   LOCATION_UID:'',                 // за бажанням: uid Хмельницького району з alerts.in.ua
   RAION:'Хмельницький район',
   OBLAST:'Хмельницька область',
@@ -77,6 +76,9 @@ const M=new Audio(),V=new Audio();
 M.preload='auto';
 let tracks=[],ti=LS.get('ti',0),started=false,voice=null,queue=[],lvl,playedAlarm=false,mUrl=null,vUrl=null,fails=0;
 let map=LS.get('map',{}),sigNames=[];
+const KEY={red:'alarm_r',yellow:'alarm_y',normal:'alarm'};
+const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
+const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
 const vol={m:LS.get('vm',100),s:LS.get('vs',100)};
 function applyVol(){M.volume=vol.m/100;V.volume=vol.s/100;$('mv').textContent=vol.m;$('sv').textContent=vol.s;$('mvol').value=vol.m;$('svol').value=vol.s}
 $('mvol').oninput=e=>{vol.m=+e.target.value;LS.set('vm',vol.m);applyVol()};
@@ -85,10 +87,10 @@ applyVol();
 
 function setState(){
   let cls='',t='';
+  const L=(lvl&&lvl!=='none')?lvl:VL[voice];
   if(voice==='silence')t='🕯 ХВИЛИНА МОВЧАННЯ';
   else if(voice==='clear'){cls='green';t='✅ ВІДБІЙ ТРИВОГИ'}
-  else if(lvl==='red'||voice==='alarm'){cls='red';t='🔴 ЧЕРВОНА ТРИВОГА'}
-  else if(lvl==='yellow'||voice==='alarm_y'){cls='yellow';t='🟡 ЖОВТА ТРИВОГА'}
+  else if(L&&SHOW[L]){cls=SHOW[L][0];t=SHOW[L][1]}
   else t=started?'Тривоги немає':'Очікування запуску';
   $('state').className=cls;$('state').textContent=t;
   $('now').textContent=!voice&&tracks.length?`♪ ${ti+1}/${tracks.length}: ${tracks[ti]}`:'';
@@ -125,13 +127,13 @@ M.addEventListener('ended',()=>LS.set('tp',0));
 // ---------- голосові сигнали (черга з пріоритетом) ----------
 async function pump(){
   if(voice)return;
-  const k=['silence','alarm','alarm_y','clear'].find(x=>queue.includes(x));
+  const k=['silence','alarm_r','alarm_y','alarm','clear'].find(x=>queue.includes(x));
   if(!k){playMusic();return}
   queue=queue.filter(x=>x!==k);
-  const f=map[k]||(k==='alarm_y'?map.alarm:'');
+  const f=map[k]||(k.startsWith('alarm')?map.alarm:'');
   const b=f?await getB('sig',f):null;
   if(!b){pump();return}
-  if(k==='alarm'||k==='alarm_y')playedAlarm=true;
+  if(k.startsWith('alarm'))playedAlarm=true;
   voice=k;M.pause();setState();
   if(vUrl)URL.revokeObjectURL(vUrl);
   vUrl=URL.createObjectURL(b);V.src=vUrl;applyVol();
@@ -148,6 +150,7 @@ function isMine(a){
   if(a.location_title===CFG.RAION&&a.location_oblast===CFG.OBLAST)return true;
   return false;
 }
+function levelOf(a){return a.alert_level==='red'?'red':a.alert_level==='yellow'?'yellow':'normal'}
 function apiStatus(ok,txt){$('dot').style.background=ok?'var(--ok)':'var(--bad)';$('api').textContent='API: '+txt}
 async function poll(){
   const tok=LS.get('tok','');
@@ -162,18 +165,16 @@ async function poll(){
     }else r=await fetch(u);
     if(!r.ok)throw new Error('HTTP '+r.status);
     const j=await r.json();
-    const on=(j.alerts||[]).filter(isMine);
-    const nl=on.length?(on.some(x=>x.alert_level!=='yellow')?'red':'yellow'):'none';
-    apiStatus(true,({none:'тихо',red:'червона тривога',yellow:'жовта тривога'})[nl]+' · '+new Date().toLocaleTimeString('uk-UA'));
+    const lv=(j.alerts||[]).filter(isMine).map(levelOf);
+    const nl=lv.includes('red')?'red':lv.includes('yellow')?'yellow':lv.length?'normal':'none';
+    apiStatus(true,({none:'тихо',red:'червона тривога',yellow:'жовта тривога',normal:'тривога (без кольору)'})[nl]+' · '+new Date().toLocaleTimeString('uk-UA'));
     const old=lvl;lvl=nl;
     if(old!==undefined&&old!==nl){
+      queue=queue.filter(x=>!x.startsWith('alarm'));
       if(nl==='none'){
-        queue=queue.filter(x=>x!=='alarm'&&x!=='alarm_y');
         if(playedAlarm)enqueue('clear');
         playedAlarm=false;
-      }else if(old==='none')enqueue(nl==='red'?'alarm':'alarm_y');
-      else if(nl==='red'){queue=queue.filter(x=>x!=='alarm_y');enqueue('alarm')}
-      else{queue=queue.filter(x=>x!=='alarm');enqueue('alarm_y')}
+      }else enqueue(KEY[nl]);            // нова тривога або зміна кольору
     }
     setState();
   }catch(e){apiStatus(false,'немає зв’язку ('+(e.name||'')+': '+(e.message||e)+')')}
@@ -209,13 +210,14 @@ $('impM').onclick=()=>$('fM').click();$('impS').onclick=()=>$('fS').click();
 $('fM').onchange=e=>importFiles('music',e.target.files);
 $('fS').onchange=e=>importFiles('sig',e.target.files);
 
-const RX={alarm:/тривог|alarm|alert|siren/i,alarm_y:/жовт|yellow/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
-const LBL={alarm:'Тривога (червона)',alarm_y:'Тривога жовта (необов’язково)',clear:'Відбій',silence:'Хвилина мовчання'};
+const RX={alarm_r:/червон|red/i,alarm_y:/жовт|yellow/i,alarm:/тривог|alarm|alert|siren/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
+const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання'};
 async function refresh(){
   tracks=nsort(await keys('music'));sigNames=nsort(await keys('sig'));
   $('mcount').textContent=tracks.length;
   for(const k of Object.keys(RX)){
-    if(!map[k]||!sigNames.includes(map[k]))map[k]=sigNames.find(n=>RX[k].test(n)&&(k==='alarm_y'||!RX.alarm_y.test(n)))||'';
+    if(!map[k]||!sigNames.includes(map[k]))
+      map[k]=sigNames.find(n=>RX[k].test(n)&&(k!=='alarm'||!(RX.alarm_r.test(n)||RX.alarm_y.test(n)||RX.clear.test(n))))||'';
   }
   LS.set('map',map);
   $('maps').innerHTML='';
@@ -232,16 +234,15 @@ async function refresh(){
 }
 
 // ---------- кнопки ----------
-$('tA').onclick=()=>enqueue('alarm');$('tY').onclick=()=>enqueue('alarm_y');$('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
+$('tR').onclick=()=>enqueue('alarm_r');$('tY').onclick=()=>enqueue('alarm_y');$('tA').onclick=()=>enqueue('alarm');
+$('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
 $('reset').onclick=()=>{LS.set('ti',0);LS.set('tp',0);ti=0;M.removeAttribute('src');playMusic()};
-$('savetok').onclick=()=>{LS.set('tok',$('token').value.trim());$('token').value='';poll()};
 $('start').onclick=()=>{started=true;$('start').style.display='none';pump()};
 document.addEventListener('click',()=>{if(!started){started=true;pump()}},{once:true});
 
 (async()=>{
   try{await navigator.storage.persist()}catch(e){}
   await refresh();
-  if(LS.get('tok',''))$('token').placeholder='Токен збережено';
   poll();
   playMusic();
 })();
