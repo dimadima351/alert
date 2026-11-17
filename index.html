@@ -12,7 +12,9 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-seri
 #state.yellow{background:#fc0;color:#111}
 #state.orange{background:#e67300;color:#fff}
 #state.green{background:#1a7f2e;color:#fff}
-#now{font-size:18px}
+#now{font-size:clamp(24px,7vw,48px);font-weight:700;line-height:1.2;margin:12px 0 4px;word-break:break-word}
+.ctl button{font-size:30px;padding:14px 20px;margin:4px;min-width:64px}
+#pp{min-width:150px}
 .mut{color:var(--mut);font-size:14px}
 .card{background:var(--card);border-radius:10px;padding:10px;margin:10px 0;text-align:left}
 button,select,input[type=password]{font:inherit;padding:10px;margin:4px 0;border-radius:8px;border:1px solid #444;background:#2a2a2a;color:var(--fg);max-width:100%}
@@ -24,7 +26,12 @@ input[type=range]{width:100%}
 <button id="start">▶ Натисни для запуску</button>
 <div id="clock">--:--:--</div>
 <div id="state">Завантаження…</div>
-<div class="mut" id="now"></div>
+<div id="now"></div>
+<div class="mut" id="cnt"></div>
+<div class="ctl">
+<button id="prev">⏮</button><button id="pp">⏸ Стоп</button><button id="next">⏭</button><br>
+<button id="mode" style="font-size:20px">🔁 По порядку</button>
+</div>
 <div class="mut"><span class="dot" id="dot"></span><span id="api">API: ще не перевірено</span></div>
 
 <div class="card">
@@ -75,10 +82,12 @@ const nsort=a=>a.sort((x,y)=>x.localeCompare(y,undefined,{numeric:true,sensitivi
 const M=new Audio(),V=new Audio();
 M.preload='auto';
 let tracks=[],ti=LS.get('ti',0),started=false,voice=null,queue=[],lvl,playedAlarm=false,mUrl=null,vUrl=null,fails=0;
+let userPaused=false,mode=LS.get('mode','seq'),hist=[];
 let map=LS.get('map',{}),sigNames=[];
 const KEY={red:'alarm_r',yellow:'alarm_y',normal:'alarm'};
 const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
 const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
+const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання'};
 const vol={m:LS.get('vm',100),s:LS.get('vs',100)};
 function applyVol(){M.volume=vol.m/100;V.volume=vol.s/100;$('mv').textContent=vol.m;$('sv').textContent=vol.s;$('mvol').value=vol.m;$('svol').value=vol.s}
 $('mvol').oninput=e=>{vol.m=+e.target.value;LS.set('vm',vol.m);applyVol()};
@@ -93,7 +102,11 @@ function setState(){
   else if(L&&SHOW[L]){cls=SHOW[L][0];t=SHOW[L][1]}
   else t=started?'Тривоги немає':'Очікування запуску';
   $('state').className=cls;$('state').textContent=t;
-  $('now').textContent=!voice&&tracks.length?`♪ ${ti+1}/${tracks.length}: ${tracks[ti]}`:'';
+  if(voice){$('now').textContent='🔔 '+LBL[voice];$('cnt').textContent=''}
+  else if(tracks.length){$('now').textContent='♪ '+tracks[ti].replace(/\.[^.]+$/,'');$('cnt').textContent=`${ti+1} / ${tracks.length}`}
+  else{$('now').textContent='';$('cnt').textContent=''}
+  $('pp').textContent=userPaused?'▶ Грати':'⏸ Стоп';
+  $('mode').textContent=mode==='rnd'?'🔀 Випадково':'🔁 По порядку';
 }
 
 // ---------- музика ----------
@@ -105,24 +118,38 @@ async function loadTrack(i,pos){
   if(mUrl)URL.revokeObjectURL(mUrl);
   mUrl=URL.createObjectURL(b);M.src=mUrl;
   if(pos)M.addEventListener('loadedmetadata',()=>{try{M.currentTime=pos}catch(e){}},{once:true});
+  setState();
   return true;
 }
 async function playMusic(){
-  if(voice||!tracks.length)return;
+  if(voice||userPaused||!tracks.length)return;
   try{
     if(!M.src){await loadTrack(ti,LS.get('tp',0))}
     await M.play();started=true;$('start').style.display='none';
   }catch(e){if(e&&e.name==='NotAllowedError'&&!started)$('start').style.display='block'}
   setState();
 }
+function pickNext(){
+  if(mode==='rnd'&&tracks.length>1){
+    hist.push(ti);if(hist.length>100)hist.shift();
+    let r;do{r=Math.floor(Math.random()*tracks.length)}while(r===ti);
+    return r;
+  }
+  return ti+1;
+}
+function pickPrev(){
+  if(mode==='rnd'&&hist.length)return hist.pop();
+  return ti-1;
+}
+async function goTo(i){LS.set('tp',0);await loadTrack(i);playMusic()}
+const goNext=()=>goTo(pickNext());
 M.onplaying=()=>{fails=0};
-M.onended=async()=>{await loadTrack(ti+1);playMusic()};
+M.onended=()=>goNext();
 M.onerror=async()=>{
   if(!tracks.length)return;
   if(++fails>tracks.length)return;
-  await new Promise(r=>setTimeout(r,500));await loadTrack(ti+1);playMusic()};
+  await new Promise(r=>setTimeout(r,500));goNext()};
 setInterval(()=>{if(!M.paused&&M.currentTime)LS.set('tp',Math.floor(M.currentTime))},5000);
-M.addEventListener('ended',()=>LS.set('tp',0));
 
 // ---------- голосові сигнали (черга з пріоритетом) ----------
 async function pump(){
@@ -181,7 +208,7 @@ async function poll(){
 }
 setInterval(poll,CFG.POLL_MS);
 
-// ---------- годинник, 08:58, watchdog ----------
+// ---------- годинник, 08:58 ----------
 const [sh,sm]=CFG.SILENCE.split(':').map(Number),st=sh*60+sm;
 setInterval(()=>{
   const d=new Date(),m=d.getHours()*60+d.getMinutes(),day=d.toDateString();
@@ -189,7 +216,17 @@ setInterval(()=>{
   if(LS.get('sday','')!==day&&m>=st&&m<st+5){LS.set('sday',day);enqueue('silence')}
   if(d.getHours()===CFG.RELOAD_HOUR&&d.getMinutes()===0&&performance.now()>36e5&&!voice)location.reload();
 },1000);
-setInterval(()=>{if(started&&!voice&&tracks.length&&M.paused)playMusic()},3000);
+
+// ---------- контроль: музика не має стояти без причини ----------
+let lastT=-1,still=0;
+setInterval(()=>{
+  if(!started||userPaused||voice||queue.length||!tracks.length)return;
+  if(M.error){still=0;goNext();return}
+  if(M.paused||M.ended||!M.src){still=0;playMusic();return}
+  if(M.currentTime===lastT){if(++still>=4){still=0;goNext()}}   // завис на ~12 с
+  else{still=0;lastT=M.currentTime}
+},3000);
+
 document.addEventListener('visibilitychange',async()=>{
   try{if(document.visibilityState==='visible')await navigator.wakeLock.request('screen')}catch(e){}
 });
@@ -211,7 +248,6 @@ $('fM').onchange=e=>importFiles('music',e.target.files);
 $('fS').onchange=e=>importFiles('sig',e.target.files);
 
 const RX={alarm_r:/червон|red/i,alarm_y:/жовт|yellow/i,alarm:/тривог|alarm|alert|siren/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
-const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання'};
 async function refresh(){
   tracks=nsort(await keys('music'));sigNames=nsort(await keys('sig'));
   $('mcount').textContent=tracks.length;
@@ -236,9 +272,18 @@ async function refresh(){
 // ---------- кнопки ----------
 $('tR').onclick=()=>enqueue('alarm_r');$('tY').onclick=()=>enqueue('alarm_y');$('tA').onclick=()=>enqueue('alarm');
 $('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
-$('reset').onclick=()=>{LS.set('ti',0);LS.set('tp',0);ti=0;M.removeAttribute('src');playMusic()};
+$('reset').onclick=()=>{LS.set('ti',0);LS.set('tp',0);ti=0;hist=[];M.removeAttribute('src');playMusic()};
 $('start').onclick=()=>{started=true;$('start').style.display='none';pump()};
 document.addEventListener('click',()=>{if(!started){started=true;pump()}},{once:true});
+
+$('pp').onclick=()=>{
+  if(userPaused){userPaused=false;started=true;playMusic()}
+  else{userPaused=true;M.pause()}
+  setState();
+};
+$('next').onclick=()=>{userPaused=false;started=true;goNext()};
+$('prev').onclick=()=>{userPaused=false;started=true;goTo(pickPrev())};
+$('mode').onclick=()=>{mode=mode==='rnd'?'seq':'rnd';hist=[];LS.set('mode',mode);setState()};
 
 (async()=>{
   try{await navigator.storage.persist()}catch(e){}
