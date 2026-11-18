@@ -2,7 +2,6 @@
 <html lang="uk"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Оповіщення + Радіо + Плейлист</title>
-<!-- Бібліотека для читання ID3-тегів -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
 <style>
 :root{color-scheme:dark;--bg:#111;--fg:#eee;--mut:#888;--ok:#3c3;--bad:#e33;--card:#1c1c1c}
@@ -90,7 +89,7 @@ input[type=range]{width:100%}
 Сигнали: <span id="sv"></span>%<input type="range" id="svol" min="0" max="100">
 </div>
 
-<!-- Системна гучність Android (для кіоску) -->
+<!-- Системна гучність Android -->
 <div class="card" style="border:1px solid #3c3;">
 <b>📱 Системна гучність (Android)</b><br>
 <div class="mut">Загальна гучність пристрою (працює лише в кіоск-додатку)</div>
@@ -164,7 +163,6 @@ const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
 const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
 const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання'};
 
-// Гучність
 const vol={m:LS.get('vm',80),s:LS.get('vs',100),sys:LS.get('sysvol',100)};
 
 function applyVol(){
@@ -174,14 +172,10 @@ function applyVol(){
   applySysVol();
 }
 
-// Функція для системної гучності Android (Fully Kiosk)
 function applySysVol(){
   $('sysv').textContent = vol.sys;
   $('sysvol').value = vol.sys;
-  
-  // Перевіряємо, чи ми в Fully Kiosk Browser
   if (window.fully && typeof fully.setAudioVolume === 'function') {
-    // 3 = STREAM_MUSIC (мультимедіа)
     fully.setAudioVolume(vol.sys, 3);
     $('sysStatus').textContent = '✅ Керування системою активне';
     $('sysStatus').style.color = 'var(--ok)';
@@ -298,12 +292,23 @@ async function loadTrack(i,pos){
   setState();
   return true;
 }
+
+// ГОЛОВНА ФУНКЦІЯ ВІДТВОРЕННЯ
 async function playMusic(){
-  if(voice||userPaused||!tracks.length||radioIsPlaying)return;
+  if(voice||userPaused||radioIsPlaying)return;
+  
+  // Якщо немає пісень - вмикаємо радіо
+  if(!tracks.length) {
+    playRadio(+$('radioSelect').value || 0);
+    return;
+  }
+
   try{
     if(!M.src){await loadTrack(ti,LS.get('tp',0))}
     await M.play();started=true;$('start').style.display='none';
-  }catch(e){if(e&&e.name==='NotAllowedError'&&!started)$('start').style.display='block'}
+  }catch(e){
+    if(e&&e.name==='NotAllowedError'&&!started)$('start').style.display='block'
+  }
   setState();
 }
 function playFromList(i){ userPaused=false; started=true; goTo(i); }
@@ -330,11 +335,72 @@ M.onerror=async()=>{
   await new Promise(r=>setTimeout(r,500));goNext()};
 setInterval(()=>{if(!M.paused&&M.currentTime)LS.set('tp',Math.floor(M.currentTime))},5000);
 
+// ---------- РАДІО ----------
+const RADIO_STATIONS = [
+  { name: 'Misto FM Deep',   url: 'https://stream.mistofm.com/listen/misto_fm_deep/radio.mp3' },
+  { name: 'Хіт FM',          url: 'https://www.hitfm.ua/HitFM.m3u' },
+  { name: 'Kiss FM',         url: 'https://online.kissfm.ua/KissFM_Digital_HD' },
+  { name: 'Radio ROKS',      url: 'https://online.radioroks.ua/RadioROKS' },
+  { name: 'Наше Радіо',      url: 'https://online.nasheradio.ua/NasheRadio' },
+  { name: 'Lux FM',          url: 'https://streamvideo.luxnet.ua/lux/smil:lux.stream.smil/playlist.m3u8' },
+  { name: 'Радіо Промінь',   url: 'https://radio.nrcu.gov.ua:8443/promin' },
+  { name: 'Країна ФМ',       url: 'http://185.65.245.34:8000/kiev' },
+  { name: 'Армія FM',        url: 'https://icecast.armyfm.com.ua:8443/ArmyFM' },
+  { name: 'Радіо 1',         url: 'https://live.radio1.com.ua/liveradio64' }
+];
+
+(function fillRadioSelect(){
+  const sel=$('radioSelect');
+  sel.innerHTML=RADIO_STATIONS.map((s,i)=>`<option value="${i}">${s.name}</option>`).join('');
+})();
+
+async function playRadio(idx) {
+  const st=RADIO_STATIONS[idx];
+  if(!st)return;
+  
+  M.pause(); M.removeAttribute('src');
+  V.pause(); V.removeAttribute('src'); voice=null;
+  radioWasPlayingDuringVoice=false;
+  userPaused=false;
+  
+  R.src=st.url; R.dataset.name=st.name; R.volume=vol.m/100;
+  $('radioSelect').value = idx;
+  try{
+    await R.play();
+    radioIsPlaying=true;
+    $('radioStatus').textContent='Грає: '+st.name;
+    started=true; $('start').style.display='none';
+  }catch(e){
+    radioIsPlaying=false;
+    $('radioStatus').textContent='Помилка: '+(e.message||e);
+  }
+  setState();
+}
+
+$('radioPlay').onclick=()=>playRadio(+$('radioSelect').value);
+
+$('radioStop').onclick=()=>{
+  R.pause();R.removeAttribute('src');R.dataset.name='';
+  radioIsPlaying=false;
+  $('radioStatus').textContent='';
+  if(tracks.length) playMusic();
+  else setState();
+};
+
+R.onerror=()=>{$('radioStatus').textContent='Потік недоступний';radioIsPlaying=false;R.removeAttribute('src');setState()};
+R.onended=()=>{radioIsPlaying=false;R.removeAttribute('src');setState()};
+
 // ---------- сигнали ----------
 async function pump(){
   if(voice)return;
   const k=['silence','alarm_r','alarm_y','alarm','clear'].find(x=>queue.includes(x));
-  if(!k){ if(!radioIsPlaying) playMusic(); return; }
+  
+  // Якщо черга порожня - запускаємо музику (або радіо, якщо музики немає)
+  if(!k){ 
+    if(!radioIsPlaying) playMusic(); 
+    return; 
+  }
+  
   queue=queue.filter(x=>x!==k);
   const f=map[k]||(k.startsWith('alarm')?map.alarm:'');
   const b=f?await getB('sig',f):null;
@@ -413,14 +479,30 @@ setInterval(()=>{
   if(d.getHours()===CFG.RELOAD_HOUR&&d.getMinutes()===1&&performance.now()>36e5&&!voice)location.reload();
 },1000);
 
-// ---------- контроль ----------
+// ---------- контроль безперервності ----------
 let lastT=-1,still=0;
 setInterval(()=>{
-  if(!started||userPaused||voice||queue.length||!tracks.length||radioIsPlaying)return;
-  if(M.error){still=0;goNext();return}
-  if(M.paused||M.ended||!M.src){still=0;playMusic();return}
-  if(M.currentTime===lastT){if(++still>=4){still=0;goNext()}}
-  else{still=0;lastT=M.currentTime}
+  // Якщо стоїть пауза, грає тривога, або завантажується черга - не втручаємось
+  if(!started||userPaused||voice||queue.length)return;
+  
+  // Якщо має грати радіо, але воно мовчить - перезапускаємо
+  if (radioIsPlaying) {
+     if (R.paused || R.error) {
+         R.play().catch(()=>{});
+     }
+     return;
+  }
+
+  // Якщо має грати музика, але вона стоїть
+  if (tracks.length > 0) {
+    if(M.error){still=0;goNext();return}
+    if(M.paused||M.ended||!M.src){still=0;playMusic();return}
+    if(M.currentTime===lastT){if(++still>=4){still=0;goNext()}}
+    else{still=0;lastT=M.currentTime}
+  } else {
+    // Якщо пісень немає і не грає радіо (наприклад, обірвався потік)
+    playRadio(+$('radioSelect').value || 0);
+  }
 },3000);
 
 document.addEventListener('visibilitychange',async()=>{
@@ -550,61 +632,12 @@ document.addEventListener('click',()=>{if(!started){started=true;pump()}},{once:
 
 $('pp').onclick=()=>{
   if(userPaused){userPaused=false;started=true;playMusic()}
-  else{userPaused=true;M.pause()}
+  else{userPaused=true;M.pause();R.pause();} // Зупиняємо і музику, і радіо
   setState();
 };
 $('next').onclick=()=>{userPaused=false;started=true;goNext()};
 $('prev').onclick=()=>{userPaused=false;started=true;goTo(pickPrev())};
 $('mode').onclick=()=>{mode=mode==='rnd'?'seq':'rnd';hist=[];LS.set('mode',mode);setState()};
-
-// ---------- РАДІО ----------
-const RADIO_STATIONS = [
-  { name: 'Misto FM Deep',   url: 'https://stream.mistofm.com/listen/misto_fm_deep/radio.mp3' },
-  { name: 'Хіт FM',          url: 'https://www.hitfm.ua/HitFM.m3u' },
-  { name: 'Kiss FM',         url: 'https://online.kissfm.ua/KissFM_Digital_HD' },
-  { name: 'Radio ROKS',      url: 'https://online.radioroks.ua/RadioROKS' },
-  { name: 'Наше Радіо',      url: 'https://online.nasheradio.ua/NasheRadio' },
-  { name: 'Lux FM',          url: 'https://streamvideo.luxnet.ua/lux/smil:lux.stream.smil/playlist.m3u8' },
-  { name: 'Радіо Промінь',   url: 'https://radio.nrcu.gov.ua:8443/promin' },
-  { name: 'Країна ФМ',       url: 'http://185.65.245.34:8000/kiev' },
-  { name: 'Армія FM',        url: 'https://icecast.armyfm.com.ua:8443/ArmyFM' },
-  { name: 'Радіо 1',         url: 'https://live.radio1.com.ua/liveradio64' }
-];
-
-(function fillRadioSelect(){
-  const sel=$('radioSelect');
-  sel.innerHTML=RADIO_STATIONS.map((s,i)=>`<option value="${i}">${s.name}</option>`).join('');
-})();
-
-$('radioPlay').onclick=async()=>{
-  const idx=+$('radioSelect').value;
-  const st=RADIO_STATIONS[idx];
-  if(!st)return;
-  M.pause();M.removeAttribute('src');
-  V.pause();V.removeAttribute('src');voice=null;
-  radioWasPlayingDuringVoice=false;
-  userPaused=false;
-  R.src=st.url;R.dataset.name=st.name;R.volume=vol.m/100;
-  try{
-    await R.play();
-    radioIsPlaying=true;
-    $('radioStatus').textContent='Грає: '+st.name;
-    started=true;$('start').style.display='none';
-  }catch(e){
-    radioIsPlaying=false;
-    $('radioStatus').textContent='Помилка: '+(e.message||e);
-  }
-  setState();
-};
-$('radioStop').onclick=()=>{
-  R.pause();R.removeAttribute('src');R.dataset.name='';
-  radioIsPlaying=false;
-  $('radioStatus').textContent='';
-  if(tracks.length) playMusic();
-  else setState();
-};
-R.onerror=()=>{$('radioStatus').textContent='Потік недоступний';radioIsPlaying=false;R.removeAttribute('src');setState()};
-R.onended=()=>{radioIsPlaying=false;R.removeAttribute('src');setState()};
 
 // ---------- ініціалізація ----------
 (async()=>{
@@ -612,6 +645,8 @@ R.onended=()=>{radioIsPlaying=false;R.removeAttribute('src');setState()};
   await refresh();
   updateTopBar();
   poll();
-  playMusic();
+  
+  // При старті перевіряємо що грати: музику чи радіо
+  playMusic(); 
 })();
 </script></body></html>
