@@ -2,7 +2,7 @@
 <html lang="uk"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Оповіщення + Радіо + Плейлист</title>
-<!-- Бібліотека для читання ID3-тегів (назва, автор) з MP3 -->
+<!-- Бібліотека для читання ID3-тегів -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
 <style>
 :root{color-scheme:dark;--bg:#111;--fg:#eee;--mut:#888;--ok:#3c3;--bad:#e33;--card:#1c1c1c}
@@ -19,11 +19,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-seri
 #pp{min-width:150px}
 .mut{color:var(--mut);font-size:14px}
 .card{background:var(--card);border-radius:10px;padding:10px;margin:10px 0;text-align:left}
-.card.music{
-  background:#0f2c3f;
-  border:2px solid #2a7da8;
-  box-shadow:0 0 0 1px #2a7da8 inset;
-}
+.card.music{ background:#0f2c3f; border:2px solid #2a7da8; box-shadow:0 0 0 1px #2a7da8 inset; }
 .card.music b{color:#7fd0ff}
 button,select,input[type=password]{font:inherit;padding:10px;margin:4px 0;border-radius:8px;border:1px solid #444;background:#2a2a2a;color:var(--fg);max-width:100%}
 button{cursor:pointer}
@@ -47,7 +43,7 @@ input[type=range]{width:100%}
 <div id="now"></div>
 <div class="mut" id="cnt"></div>
 
-<!-- Блок керування музикою (виділений кольором) -->
+<!-- Блок керування музикою -->
 <div class="card music">
 <b>🎵 Керування музикою</b><br>
 <div class="ctl">
@@ -57,7 +53,10 @@ input[type=range]{width:100%}
 <div class="mut">Гучність музики: <span id="mv"></span>%<input type="range" id="mvol" min="0" max="100"></div>
 
 <!-- Плейлист -->
-<b style="display:block; margin-top:15px;">📜 Список пісень</b>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:15px;">
+  <b>📜 Список пісень</b>
+  <button id="scanTags" style="margin:0; padding:5px 10px; font-size:12px;">🔄 Оновити назви</button>
+</div>
 <div class="playlist" id="playlist">
   <div class="mut" style="padding:10px; text-align:center;">Завантаження списку...</div>
 </div>
@@ -108,14 +107,14 @@ const $=id=>document.getElementById(id);
 const LS={get:(k,d)=>{try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch(e){return d}},
           set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
 
-// ---------- IndexedDB ----------
-const dbp=new Promise((res,rej)=>{const r=indexedDB.open('alertbox',2);
+// ---------- IndexedDB (версія 3 - додано сховище meta) ----------
+const dbp=new Promise((res,rej)=>{const r=indexedDB.open('alertbox',3);
   r.onupgradeneeded=()=>{
     const db=r.result;
     if(!db.objectStoreNames.contains('music')) db.createObjectStore('music');
     if(!db.objectStoreNames.contains('sig'))   db.createObjectStore('sig');
-    // store "hour" більше не використовується, але лишаємо для сумісності
     if(!db.objectStoreNames.contains('hour'))  db.createObjectStore('hour');
+    if(!db.objectStoreNames.contains('meta'))  db.createObjectStore('meta'); // Для метаданих
   };
   r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 async function tx(store,mode,fn){const d=await dbp;return new Promise((res,rej)=>{
@@ -137,12 +136,9 @@ const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
 const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
 const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання'};
 
-// Гучність: музика 80 %, сигнали 100 %
 const vol={m:LS.get('vm',80),s:LS.get('vs',100)};
 function applyVol(){
-  M.volume=vol.m/100;
-  V.volume=vol.s/100;
-  R.volume=vol.m/100;
+  M.volume=vol.m/100; V.volume=vol.s/100; R.volume=vol.m/100;
   $('mv').textContent=vol.m;$('sv').textContent=vol.s;
   $('mvol').value=vol.m;$('svol').value=vol.s;
 }
@@ -171,7 +167,6 @@ function setState(){
   $('pp').textContent=userPaused?'▶ Грати':'⏸ Стоп';
   $('mode').textContent=mode==='rnd'?'🔀 Випадково':'🔁 По порядку';
   
-  // Оновлення плейлиста (підсвічування)
   renderPlaylist();
 }
 
@@ -179,26 +174,26 @@ function setState(){
 function renderPlaylist(){
   if(!tracks.length) return;
   const pl = $('playlist');
-  // Щоб не перемальовувати весь список кожну секунду, перевіряємо кількість
+  
   if(pl.children.length !== tracks.length){
     pl.innerHTML = tracks.map((k,i)=>{
       const m = trackMeta[k] || {title:k, artist:'', dur:0};
-      const dStr = m.dur ? new Date(m.dur*1000).toISOString().substr(14,5) : '--:--';
+      const dStr = (m.dur && m.dur > 0) ? new Date(m.dur*1000).toISOString().substr(14,5) : '--:--';
+      // Очищаємо назву від розширення, якщо це ім'я файлу
+      const displayTitle = m.title ? m.title.replace(/\.[^.]+$/, '') : k.replace(/\.[^.]+$/, '');
       return `<div class="track-item" id="track-${i}" onclick="playFromList(${i})">
         <div class="track-num">${i+1}</div>
-        <div class="track-title">${m.title||k}</div>
+        <div class="track-title">${displayTitle}</div>
         <div class="track-artist">${m.artist||''}</div>
         <div class="track-dur">${dStr}</div>
       </div>`;
     }).join('');
   }
   
-  // Підсвічування активного
   document.querySelectorAll('.track-item').forEach(el=>el.classList.remove('active'));
   const act = $('track-'+ti);
   if(act){
     act.classList.add('active');
-    // Автоскрол до активної пісні
     act.scrollIntoView({block:'nearest', behavior:'smooth'});
   }
 }
@@ -247,14 +242,11 @@ M.onerror=async()=>{
   await new Promise(r=>setTimeout(r,500));goNext()};
 setInterval(()=>{if(!M.paused&&M.currentTime)LS.set('tp',Math.floor(M.currentTime))},5000);
 
-// ---------- сигнали (черга з пріоритетом) ----------
+// ---------- сигнали ----------
 async function pump(){
   if(voice)return;
   const k=['silence','alarm_r','alarm_y','alarm','clear'].find(x=>queue.includes(x));
-  if(!k){
-    if(!radioIsPlaying) playMusic();
-    return;
-  }
+  if(!k){ if(!radioIsPlaying) playMusic(); return; }
   queue=queue.filter(x=>x!==k);
   const f=map[k]||(k.startsWith('alarm')?map.alarm:'');
   const b=f?await getB('sig',f):null;
@@ -283,7 +275,7 @@ function end(){
 V.onended=end;V.onerror=end;
 function enqueue(k){if(!queue.includes(k))queue.push(k);pump()}
 
-// ---------- API тривоги ----------
+// ---------- API ----------
 function isMine(a){
   if(a.alert_type!=='air_raid'||a.finished_at)return false;
   if(CFG.LOCATION_UID&&String(a.location_uid)===String(CFG.LOCATION_UID))return true;
@@ -321,7 +313,7 @@ async function poll(){
 }
 setInterval(poll,CFG.POLL_MS);
 
-// ---------- годинник, 08:58, 04:01 ----------
+// ---------- годинник ----------
 const [sh,sm]=CFG.SILENCE.split(':').map(Number),st=sh*60+sm;
 setInterval(()=>{
   const d=new Date(),m=d.getHours()*60+d.getMinutes(),day=d.toDateString();
@@ -330,7 +322,7 @@ setInterval(()=>{
   if(d.getHours()===CFG.RELOAD_HOUR&&d.getMinutes()===1&&performance.now()>36e5&&!voice)location.reload();
 },1000);
 
-// ---------- контроль: музика не має стояти без причини ----------
+// ---------- контроль ----------
 let lastT=-1,still=0;
 setInterval(()=>{
   if(!started||userPaused||voice||queue.length||!tracks.length||radioIsPlaying)return;
@@ -345,18 +337,106 @@ document.addEventListener('visibilitychange',async()=>{
 });
 try{navigator.wakeLock.request('screen')}catch(e){}
 
-// ---------- імпорт та читання тегів ----------
+// ---------- Отримання метаданих (Теги + Тривалість) ----------
+function extractMetadata(file) {
+  return new Promise((resolve) => {
+    let meta = {
+      title: file.name.replace(/\.[^.]+$/, ''), 
+      artist: '',
+      dur: 0
+    };
+
+    let tagsDone = false;
+    let audioDone = false;
+
+    const checkDone = () => {
+      if (tagsDone && audioDone) resolve(meta);
+    };
+
+    // 1. Читаємо теги (швидко і незалежно)
+    jsmediatags.read(file, {
+      onSuccess: function(tag) {
+        if (tag.tags.title) meta.title = tag.tags.title;
+        if (tag.tags.artist) meta.artist = tag.tags.artist;
+        tagsDone = true;
+        checkDone();
+      },
+      onError: function() {
+        tagsDone = true;
+        checkDone();
+      }
+    });
+
+    // 2. Читаємо тривалість (через аудіо-об'єкт)
+    const url = URL.createObjectURL(file);
+    const audio = new Audio(url);
+    audio.preload = 'metadata';
+    
+    audio.addEventListener('loadedmetadata', () => {
+      meta.dur = audio.duration;
+      URL.revokeObjectURL(url);
+      audioDone = true;
+      checkDone();
+    });
+
+    audio.addEventListener('error', () => {
+      URL.revokeObjectURL(url);
+      audioDone = true;
+      checkDone();
+    });
+
+    // Запобіжник: якщо через 3 секунди аудіо не завантажилось, пропускаємо
+    setTimeout(() => {
+        if(!audioDone) {
+            URL.revokeObjectURL(url);
+            audioDone = true;
+            checkDone();
+        }
+    }, 3000);
+  });
+}
+
+// Оновлення метаданих для ВЖЕ імпортованих треків
+$('scanTags').onclick = async () => {
+  if(!tracks.length) return alert('Спочатку імпортуйте музику!');
+  $('scanTags').disabled = true;
+  $('scanTags').textContent = '⏳ Сканування...';
+  
+  for(let i=0; i<tracks.length; i++) {
+    $('scanTags').textContent = `⏳ ${i+1}/${tracks.length}`;
+    const b = await getB('music', tracks[i]);
+    if(b) {
+      const meta = await extractMetadata(b);
+      await tx('meta','readwrite', o=>o.put(meta, tracks[i]));
+      trackMeta[tracks[i]] = meta;
+    }
+    // Оновлюємо UI кожні кілька треків
+    if(i % 5 === 0) {
+        $('playlist').innerHTML = ''; // Скидаємо, щоб перемалювати
+        renderPlaylist();
+    }
+  }
+  
+  $('scanTags').disabled = false;
+  $('scanTags').textContent = '🔄 Оновити назви';
+  $('playlist').innerHTML = '';
+  renderPlaylist();
+  setState();
+  alert('Готово! Теги оновлено.');
+};
+
+// ---------- імпорт ----------
 async function importFiles(store,files){
   const list=[...files].filter(f=>/\.(mp3|wav|ogg|m4a|aac)$/i.test(f.name)||f.type.startsWith('audio/'));
   let n=0;
   for(const f of list){
     try{
-      // Перед збереженням витягуємо метадані, щоб не робити це при кожному запуску
+      await tx(store,'readwrite',o=>o.put(f,f.name));
       if(store === 'music') {
         const meta = await extractMetadata(f);
-        LS.set('meta_'+f.name, meta); // Зберігаємо в localStorage для швидкості
+        await tx('meta','readwrite', o=>o.put(meta, f.name));
+        trackMeta[f.name] = meta;
       }
-      await tx(store,'readwrite',o=>o.put(f,f.name));
     }catch(e){$('prog').textContent='Помилка: '+f.name;break}
     $('prog').textContent=`Імпорт ${++n}/${list.length}`;
   }
@@ -364,57 +444,21 @@ async function importFiles(store,files){
   await refresh();
 }
 
-// Функція витягування назви, автора та тривалості
-function extractMetadata(file) {
-  return new Promise((resolve) => {
-    let meta = {
-      title: file.name.replace(/\.[^.]+$/, ''), // За замовчуванням ім'я файлу
-      artist: '',
-      dur: 0
-    };
-
-    const url = URL.createObjectURL(file);
-    const audio = new Audio(url);
-    audio.addEventListener('loadedmetadata', () => {
-      meta.dur = audio.duration;
-      URL.revokeObjectURL(url);
-
-      // Читаємо ID3-теги (назва, автор)
-      jsmediatags.read(file, {
-        onSuccess: function(tag) {
-          if (tag.tags.title) meta.title = tag.tags.title;
-          if (tag.tags.artist) meta.artist = tag.tags.artist;
-          resolve(meta);
-        },
-        onError: function(error) {
-          resolve(meta); // Якщо тегів немає, лишаємо ім'я файлу
-        }
-      });
-    });
-    audio.addEventListener('error', () => {
-       URL.revokeObjectURL(url);
-       resolve(meta);
-    });
-  });
-}
-
 $('impM').onclick=()=>$('fM').click();$('impS').onclick=()=>$('fS').click();
 $('fM').onchange=e=>importFiles('music',e.target.files);
 $('fS').onchange=e=>importFiles('sig',e.target.files);
 
 const RX={alarm_r:/червон|red/i,alarm_y:/жовт|yellow/i,alarm:/тривог|alarm|alert|siren/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
+
 async function refresh(){
   tracks=nsort(await keys('music'));
   sigNames=nsort(await keys('sig'));
   $('mcount').textContent=tracks.length;
 
-  // Підтягуємо збережені метадані
+  // Завантажуємо метадані з IndexedDB
   trackMeta = {};
-  for(const k of tracks){
-     const saved = LS.get('meta_'+k, null);
-     if(saved) trackMeta[k] = saved;
-     else trackMeta[k] = {title: k.replace(/\.[^.]+$/,''), artist:'', dur:0};
-  }
+  const metas = await tx('meta', 'readonly', o => o.getAllKeys()).then(keys => Promise.all(keys.map(k => getB('meta', k).then(m => ({k, m})))));
+  metas.forEach(({k, m}) => { if(m) trackMeta[k] = m; });
 
   for(const k of Object.keys(RX)){
     if(!map[k]||!sigNames.includes(map[k]))
@@ -431,6 +475,7 @@ async function refresh(){
   }
   try{const e=await navigator.storage.estimate();$('quota').textContent=`${(e.usage/1e9).toFixed(2)} з ${(e.quota/1e9).toFixed(1)} ГБ`}catch(e){}
   if(ti>=tracks.length)ti=0;
+  $('playlist').innerHTML = ''; // Примусово перемальовуємо список
   setState();
 }
 
@@ -450,7 +495,7 @@ $('next').onclick=()=>{userPaused=false;started=true;goNext()};
 $('prev').onclick=()=>{userPaused=false;started=true;goTo(pickPrev())};
 $('mode').onclick=()=>{mode=mode==='rnd'?'seq':'rnd';hist=[];LS.set('mode',mode);setState()};
 
-// ---------- РАДІО ОНЛАЙН ----------
+// ---------- РАДІО ----------
 const RADIO_STATIONS = [
   { name: 'Misto FM Deep',   url: 'https://stream.mistofm.com/listen/misto_fm_deep/radio.mp3' },
   { name: 'Хіт FM',          url: 'https://www.hitfm.ua/HitFM.m3u' },
