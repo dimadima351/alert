@@ -51,6 +51,8 @@ input[type=checkbox]{width:22px;height:22px;vertical-align:middle;margin-right:6
   box-shadow: 0 4px 10px rgba(0,0,0,0.5);
   transition: all 0.3s ease;
 }
+#topBar{gap:8px;flex-wrap:wrap}
+#btStat{font-weight:bold}
 #topBar.online { border-color: #3c3; color: #3c3; background: #122612; }
 #topBar.offline { border-color: #e33; color: #e33; background: #2e1212; }
 #topBar.local { border-color: #e67300; color: #e67300; background: #2e2012; }
@@ -59,6 +61,7 @@ input[type=checkbox]{width:22px;height:22px;vertical-align:middle;margin-right:6
 <!-- ІНДИКАТОР СТАНУ -->
 <div id="topBar" class="online">
   <div id="netStat">🌐 Мережа: перевірка...</div>
+  <div id="btStat">🔵 BT: ...</div>
   <div id="playMode">⏳ Режим: очікування</div>
 </div>
 
@@ -178,7 +181,7 @@ let tracks=[],trackMeta={},ti=LS.get('ti',0),started=false,voice=null,queue=[],l
 let userPaused=false,mode=LS.get('mode','seq'),hist=[];
 let map=LS.get('map',{}),sigNames=[];
 let radioIsPlaying=false, radioWasPlayingDuringVoice=false;
-let schedOn=LS.get('sched',false), schedRadio=false, radioCool=0, rLast=-1, rStill=0;
+let schedOn=LS.get('sched',false), schedRadio=false, radioCool=0, radioStarting=false, rAlive=0;
 const KEY={red:'alarm_r',yellow:'alarm_y',normal:'alarm'};
 const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
 const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
@@ -271,6 +274,33 @@ function updateTopBar() {
   }
 }
 
+// ---------- Bluetooth ----------
+async function updateBt(){
+  const el=$('btStat');
+  let txt='🔵 BT: невідомо',col='var(--mut)';
+  try{
+    if(window.fully&&typeof fully.isBluetoothEnabled==='function'){
+      if(!fully.isBluetoothEnabled()){txt='🔵 BT: вимкнено';col='var(--bad)'}
+      else{
+        txt='🔵 BT: увімкнено';col='var(--ok)';
+        if(typeof fully.btGetDeviceListJson==='function'){
+          let list=[];
+          try{list=JSON.parse(fully.btGetDeviceListJson()||'[]')}catch(e){}
+          if(!Array.isArray(list))list=list.devices||[];
+          const on=list.filter(d=>d&&(d.connected===true||d.isConnected===true||d.connectionState==='connected'||/^connected$/i.test(String(d.state||d.connectionState||''))));
+          if(on.length){txt='🎧 BT: '+on.map(d=>d.name||d.deviceName||d.mac||'пристрій').join(', ')}
+          else{txt='🔵 BT: увімк., нічого не підключено';col='#e67300'}
+        }
+      }
+    }else if(navigator.bluetooth&&navigator.bluetooth.getAvailability){
+      const a=await navigator.bluetooth.getAvailability();
+      txt=a?'🔵 BT: доступний':'🔵 BT: недоступний';col=a?'var(--ok)':'var(--bad)';
+    }
+  }catch(e){}
+  el.textContent=txt;el.style.color=col;
+}
+setInterval(updateBt,5000);updateBt();
+
 window.addEventListener('online', updateTopBar);
 window.addEventListener('offline', updateTopBar);
 
@@ -342,7 +372,9 @@ async function loadTrack(i,pos){
 
 // ГОЛОВНА ФУНКЦІЯ ВІДТВОРЕННЯ
 async function playMusic(){
-  if(voice||userPaused||radioIsPlaying)return;
+  if(voice||userPaused||radioIsPlaying||radioStarting)return;
+  // Радіо за розкладом: у вікні радіо музика не вмикається, замість неї стартує радіо
+  if(shouldRadioNow()){startSchedRadio();return}
   
   // Якщо немає пісень - вмикаємо радіо
   if(!tracks.length) {
@@ -463,24 +495,34 @@ function inRadioWindow(){
   const d=new Date(),m=d.getHours()*60+d.getMinutes();
   return SLOTS.some(([a,b])=>m>=a&&m<b);
 }
+function shouldRadioNow(){
+  return schedOn&&!userPaused&&inRadioWindow()&&navigator.onLine&&Date.now()>radioCool;
+}
 function stopSchedRadio(){
   R.pause();R.removeAttribute('src');R.dataset.name='';
   radioIsPlaying=false;schedRadio=false;$('radioStatus').textContent='';
 }
+R.addEventListener('timeupdate',()=>{rAlive=Date.now()});
+R.addEventListener('playing',()=>{rAlive=Date.now()});
 async function startSchedRadio(){
+  if(radioStarting||radioIsPlaying)return;
   const idx=+$('radioSelect').value||0,st=RADIO_STATIONS[idx];
   if(!st)return;
+  radioStarting=true;
   M.pause();
   R.src=st.url;R.dataset.name=st.name;R.volume=vol.m/100;
   try{
     await R.play();
-    radioIsPlaying=true;schedRadio=true;rStill=0;rLast=-1;
+    radioIsPlaying=true;schedRadio=true;rAlive=Date.now()+20000; // 20 с на буферизацію
     $('radioStatus').textContent='За розкладом: '+st.name;
   }catch(e){
     radioIsPlaying=false;schedRadio=false;R.removeAttribute('src');
     radioCool=Date.now()+2*60000;
-    playMusic();
+    radioStarting=false;
+    playMusic(); // радіо не вдалось -> музика (cooldown вже виставлено)
+    return;
   }
+  radioStarting=false;
   setState();
 }
 setInterval(()=>{
@@ -488,13 +530,11 @@ setInterval(()=>{
   const online=navigator.onLine,win=inRadioWindow();
   if(schedRadio){
     if(!win||!online){stopSchedRadio();playMusic();setState();return}
-    // потік завис (час не рухається ~20 с) -> повертаємось до музики
-    if(R.currentTime===rLast){
-      if(++rStill>=4){stopSchedRadio();radioCool=Date.now()+2*60000;playMusic();setState()}
-    }else{rStill=0;rLast=R.currentTime}
+    // потік завис (немає даних >40 с) -> тимчасово музика
+    if(!R.paused&&Date.now()-rAlive>40000){stopSchedRadio();radioCool=Date.now()+2*60000;playMusic();setState()}
     return;
   }
-  if(win&&online&&!radioIsPlaying&&Date.now()>radioCool)startSchedRadio();
+  if(shouldRadioNow()&&!radioIsPlaying)startSchedRadio();
 },5000);
 
 $('schedOn').checked=schedOn;
