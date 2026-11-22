@@ -614,6 +614,7 @@ function renderAds(){
 renderAds();
 
 // ---------- сигнали ----------
+let voiceIsTest=false;const testKeys=new Set();
 const ORDER=['silence','alarm_r','alarm_y','alarm','clear','ad1','ad2','ad3'];
 async function pump(){
   if(voice)return;
@@ -635,15 +636,24 @@ async function pump(){
   if(!b){pump();return}
   if(k.startsWith('alarm'))playedAlarm=true;
 
-  voice=k;
+  voice=k;voiceIsTest=testKeys.delete(k);
   M.pause();
   if(!R.paused){radioWasPlayingDuringVoice=true;R.pause()}
   setState();
 
   if(vUrl)URL.revokeObjectURL(vUrl);
   vUrl=URL.createObjectURL(b);V.src=vUrl;applyVol();
-  V.play().catch(()=>end());
+  V.play().catch(e=>{
+    if(e&&e.name==='NotAllowedError'&&!started)$('start').style.display='block';
+    end(); // не озвучено -> наступний poll спробує знову
+  });
 }
+function markAnn(){
+  if(!voice||voiceIsTest)return;
+  if(voice==='clear'){LS.set('ann','none');LS.set('annT',Date.now())}
+  else if(VL[voice]){LS.set('ann',VL[voice]);LS.set('annT',Date.now())}
+}
+V.addEventListener('playing',markAnn);
 function end(){
   voice=null;setState();
   if(radioWasPlayingDuringVoice && radioIsPlaying){
@@ -655,7 +665,7 @@ function end(){
   pump();
 }
 V.onended=end;V.onerror=end;
-function enqueue(k){if(!queue.includes(k))queue.push(k);pump()}
+function enqueue(k,test){if(test)testKeys.add(k);if(!queue.includes(k))queue.push(k);pump()}
 
 // ---------- API ----------
 function isMine(a){
@@ -682,13 +692,17 @@ async function poll(){
     const lv=(j.alerts||[]).filter(isMine).map(levelOf);
     const nl=lv.includes('red')?'red':lv.includes('yellow')?'yellow':lv.length?'normal':'none';
     apiStatus(true,({none:'тихо',red:'червона тривога',yellow:'жовта тривога',normal:'тривога (без кольору)'})[nl]+' · '+new Date().toLocaleTimeString('uk-UA'));
-    const old=lvl;lvl=nl;
-    if(old!==undefined&&old!==nl){
-      queue=queue.filter(x=>!x.startsWith('alarm'));
-      if(nl==='none'){
-        if(playedAlarm)enqueue('clear');
-        playedAlarm=false;
-      }else enqueue(KEY[nl]);
+    lvl=nl;
+    // Порівнюємо з тим, що ВЖЕ БУЛО озвучено (зберігається між перезавантаженнями)
+    const ann=LS.get('ann','none');
+    if(nl!==ann){
+      const want=nl==='none'?'clear':KEY[nl];
+      if(nl==='none'&&Date.now()-LS.get('annT',0)>3*3600e3){
+        LS.set('ann','none'); // відбій застарів (>3 год) — не озвучуємо
+      }else if(voice!==want&&!queue.includes(want)){
+        queue=queue.filter(x=>!x.startsWith('alarm')&&x!=='clear');
+        enqueue(want);
+      }
     }
     setState();
   }catch(e){
@@ -871,8 +885,8 @@ async function refresh(){
 }
 
 // ---------- кнопки ----------
-$('tR').onclick=()=>enqueue('alarm_r');$('tY').onclick=()=>enqueue('alarm_y');$('tA').onclick=()=>enqueue('alarm');
-$('tC').onclick=()=>enqueue('clear');$('tS').onclick=()=>enqueue('silence');
+$('tR').onclick=()=>enqueue('alarm_r',1);$('tY').onclick=()=>enqueue('alarm_y',1);$('tA').onclick=()=>enqueue('alarm',1);
+$('tC').onclick=()=>enqueue('clear',1);$('tS').onclick=()=>enqueue('silence',1);
 $('reset').onclick=()=>{LS.set('ti',0);LS.set('tp',0);ti=0;hist=[];M.removeAttribute('src');playMusic()};
 $('start').onclick=()=>{started=true;$('start').style.display='none';pump()};
 document.addEventListener('click',()=>{if(!started){started=true;pump()}},{once:true});
