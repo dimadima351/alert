@@ -175,7 +175,12 @@ const getB=(s,k)=>tx(s,'readonly',o=>o.get(k));
 const nsort=a=>a.sort((x,y)=>x.localeCompare(y,undefined,{numeric:true,sensitivity:'base'}));
 
 // ---------- стан ----------
-const M=new Audio(),V=new Audio(),R=new Audio();
+const M=new Audio(),V=new Audio(),RC=new Audio(),RP=new Audio();
+// RC — радіо з CORS (гучність через GainNode), RP — звичайне (гучність через audio.volume)
+RC.crossOrigin='anonymous';
+let R=RP; // поточний елемент радіо
+let streamOpening=false,corsBad=LS.get('corsBad',{});
+RC.preload='none';
 M.preload='auto'; R.preload='none';
 let tracks=[],trackMeta={},ti=LS.get('ti',0),started=false,voice=null,queue=[],lvl,playedAlarm=false,mUrl=null,vUrl=null,fails=0;
 let userPaused=false,mode=LS.get('mode','seq'),hist=[];
@@ -192,7 +197,7 @@ const vol={m:LS.get('vm',80),s:LS.get('vs',100),sys:LS.get('sysvol',100)};
 // ---------- Гучність через Web Audio (GainNode) ----------
 // Звичайне audio.volume у деяких WebView/пристроях ігнорується, тому для музики і сигналів
 // використовуємо GainNode. Радіо (чужий домен) лишається на audio.volume.
-let AC=null,gM=null,gV=null,gainReady=false;
+let AC=null,gM=null,gV=null,gR=null,gainReady=false;
 async function initGain(){
   if(gainReady)return;
   try{
@@ -202,9 +207,11 @@ async function initGain(){
     if(AC.state!=='running')await AC.resume();
     if(AC.state!=='running')return; // дочекаємось першого дотику
     const sM=AC.createMediaElementSource(M),sV=AC.createMediaElementSource(V);
-    gM=AC.createGain();gV=AC.createGain();
+    const sR=AC.createMediaElementSource(RC);
+    gM=AC.createGain();gV=AC.createGain();gR=AC.createGain();
     sM.connect(gM);gM.connect(AC.destination);
     sV.connect(gV);gV.connect(AC.destination);
+    sR.connect(gR);gR.connect(AC.destination);
     gainReady=true;applyVol();
   }catch(e){}
 }
@@ -213,11 +220,12 @@ async function initGain(){
 function applyVol(){
   if(gainReady){
     M.volume=1;V.volume=1;
-    gM.gain.value=vol.m/100;gV.gain.value=vol.s/100;
+    RC.volume=1;
+    gM.gain.value=vol.m/100;gV.gain.value=vol.s/100;gR.gain.value=vol.m/100;
   }else{
-    M.volume=vol.m/100;V.volume=vol.s/100;
+    M.volume=vol.m/100;V.volume=vol.s/100;RC.volume=vol.m/100;
   }
-  R.volume=vol.m/100;
+  RP.volume=vol.m/100;
   $('mv').textContent=vol.m;$('sv').textContent=vol.s;
   $('mvol').value=vol.m;$('svol').value=vol.s;
 }
@@ -446,6 +454,26 @@ const RADIO_STATIONS = [
   sel.onchange=()=>LS.set('rs',+sel.value);
 })();
 
+// Відкриває потік: спочатку з CORS (гучність через GainNode), якщо сервер не дозволяє — звичайний режим
+async function startStream(url,name){
+  streamOpening=true;
+  try{
+    const useC=gainReady&&!corsBad[url];
+    const el=useC?RC:RP,other=useC?RP:RC;
+    other.pause();other.removeAttribute('src');
+    R=el;el.src=url;el.dataset.name=name;applyVol();
+    try{await el.play()}
+    catch(e){
+      if(useC&&!(e&&e.name==='NotAllowedError')){
+        corsBad[url]=true;LS.set('corsBad',corsBad);
+        el.pause();el.removeAttribute('src');
+        R=RP;RP.src=url;RP.dataset.name=name;applyVol();
+        await RP.play();
+      }else throw e;
+    }
+  }finally{streamOpening=false}
+}
+
 async function playRadio(idx) {
   const st=RADIO_STATIONS[idx];
   if(!st)return;
@@ -455,10 +483,9 @@ async function playRadio(idx) {
   radioWasPlayingDuringVoice=false;
   userPaused=false;schedRadio=false;
   
-  R.src=st.url; R.dataset.name=st.name; R.volume=vol.m/100;
   $('radioSelect').value = idx;LS.set('rs',idx);
   try{
-    await R.play();
+    await startStream(st.url,st.name);
     radioIsPlaying=true;
     $('radioStatus').textContent='Грає: '+st.name;
     started=true; $('start').style.display='none';
@@ -480,14 +507,21 @@ $('radioStop').onclick=()=>{
   else setState();
 };
 
-R.onerror=()=>{
+function radioErr(){
+  if(streamOpening)return;
   $('radioStatus').textContent='Потік недоступний';
   radioIsPlaying=false;schedRadio=false;radioCool=Date.now()+2*60000;
   R.removeAttribute('src');
   if(tracks.length&&!voice)playMusic();
   setState();
-};
-R.onended=()=>{radioIsPlaying=false;schedRadio=false;R.removeAttribute('src');if(tracks.length&&!voice)playMusic();setState()};
+}
+function radioEnd(){radioIsPlaying=false;schedRadio=false;R.removeAttribute('src');if(tracks.length&&!voice)playMusic();setState()}
+[RC,RP].forEach(el=>{
+  el.onerror=()=>{if(el===R)radioErr()};
+  el.onended=()=>{if(el===R)radioEnd()};
+  el.addEventListener('timeupdate',()=>{rAlive=Date.now()});
+  el.addEventListener('playing',()=>{rAlive=Date.now()});
+});
 
 // ---------- Радіо за розкладом ----------
 const SLOTS=CFG.RADIO_SLOTS.map(([a,b])=>{const f=s=>{const [h,m]=s.split(':').map(Number);return h*60+m};return [f(a),f(b)]});
@@ -502,17 +536,14 @@ function stopSchedRadio(){
   R.pause();R.removeAttribute('src');R.dataset.name='';
   radioIsPlaying=false;schedRadio=false;$('radioStatus').textContent='';
 }
-R.addEventListener('timeupdate',()=>{rAlive=Date.now()});
-R.addEventListener('playing',()=>{rAlive=Date.now()});
 async function startSchedRadio(){
   if(radioStarting||radioIsPlaying)return;
   const idx=+$('radioSelect').value||0,st=RADIO_STATIONS[idx];
   if(!st)return;
   radioStarting=true;
   M.pause();
-  R.src=st.url;R.dataset.name=st.name;R.volume=vol.m/100;
   try{
-    await R.play();
+    await startStream(st.url,st.name);
     radioIsPlaying=true;schedRadio=true;rAlive=Date.now()+20000; // 20 с на буферизацію
     $('radioStatus').textContent='За розкладом: '+st.name;
   }catch(e){
