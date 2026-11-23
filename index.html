@@ -134,7 +134,7 @@ input[type=checkbox]{width:22px;height:22px;vertical-align:middle;margin-right:6
 <button id="impM">Імпорт музики (папка 0)</button>
 <button id="impS">Імпорт сигналів (папка 1)</button>
 <div id="prog" class="mut"></div>
-<button id="tR">Тест: червона</button><button id="tY">Тест: жовта</button><button id="tA">Тест: звичайна</button><button id="tC">Тест: відбій</button><button id="tS">Тест: хвилина мовчання</button>
+<button id="tR">Тест: червона</button><button id="tY">Тест: жовта</button><button id="tA">Тест: звичайна</button><button id="tC">Тест: відбій</button><button id="tOR">Тест: триває (червона)</button><button id="tOY">Тест: триває (жовта)</button><button id="tS">Тест: хвилина мовчання</button>
 <button id="reset">Скинути позицію в музиці</button>
 </div>
 <input type="file" id="fM" accept="audio/*,.mp3" multiple hidden>
@@ -149,6 +149,7 @@ const CFG={
   POLL_MS:20000,
   SILENCE:'08:58',
   RELOAD_HOUR:4,
+  ONGOING_MS:15*60*1000,   // кожні 15 хв нагадувати, що тривога триває
   RADIO_SLOTS:[['09:10','10:00'],['14:00','15:00'],['17:00','18:00']], // радіо за розкладом
   WATCHDOG_MS:10*60*1000   // перевірка "чи щось грає" кожні 10 хв
 };
@@ -190,7 +191,7 @@ let schedOn=LS.get('sched',false), schedRadio=false, radioCool=0, radioStarting=
 const KEY={red:'alarm_r',yellow:'alarm_y',normal:'alarm'};
 const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
 const SHOW={red:['red','🔴 ЧЕРВОНА ТРИВОГА'],yellow:['yellow','🟡 ЖОВТА ТРИВОГА'],normal:['orange','🟠 ПОВІТРЯНА ТРИВОГА']};
-const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання',ad1:'Оповіщення 1',ad2:'Оповіщення 2',ad3:'Оповіщення 3'};
+const LBL={alarm_r:'Тривога червона',alarm_y:'Тривога жовта',alarm:'Тривога звичайна (без кольору)',clear:'Відбій',silence:'Хвилина мовчання',ong_r:'Триває тривога (червона)',ong_y:'Триває тривога (жовта)',ad1:'Оповіщення 1',ad2:'Оповіщення 2',ad3:'Оповіщення 3'};
 
 const vol={m:LS.get('vm',80),s:LS.get('vs',100),sys:LS.get('sysvol',100)};
 
@@ -615,7 +616,7 @@ renderAds();
 
 // ---------- сигнали ----------
 let voiceIsTest=false;const testKeys=new Set();
-const ORDER=['silence','alarm_r','alarm_y','alarm','clear','ad1','ad2','ad3'];
+const ORDER=['silence','alarm_r','alarm_y','alarm','clear','ong_r','ong_y','ad1','ad2','ad3'];
 async function pump(){
   if(voice)return;
   const k=ORDER.find(x=>queue.includes(x));
@@ -630,10 +631,10 @@ async function pump(){
   let b=null;
   if(/^ad\d$/.test(k)) b=await getB('ads',k);
   else{
-    const f=map[k]||(k.startsWith('alarm')?map.alarm:'');
+    const f=map[k]||(k.startsWith('alarm')?map.alarm:k==='ong_r'?map.ong_y:k==='ong_y'?map.ong_r:'');
     b=f?await getB('sig',f):null;
   }
-  if(!b){pump();return}
+  if(!b){if(k.startsWith('ong'))LS.set('ongT',Date.now());pump();return}
   if(k.startsWith('alarm'))playedAlarm=true;
 
   voice=k;voiceIsTest=testKeys.delete(k);
@@ -650,8 +651,9 @@ async function pump(){
 }
 function markAnn(){
   if(!voice||voiceIsTest)return;
-  if(voice==='clear'){LS.set('ann','none');LS.set('annT',Date.now())}
-  else if(VL[voice]){LS.set('ann',VL[voice]);LS.set('annT',Date.now())}
+  if(voice==='clear'){LS.set('ann','none');LS.set('annT',Date.now());LS.set('ongT',0)}
+  else if(VL[voice]){LS.set('ann',VL[voice]);LS.set('annT',Date.now());LS.set('ongT',Date.now())}
+  else if(voice==='ong_r'||voice==='ong_y')LS.set('ongT',Date.now());
 }
 V.addEventListener('playing',markAnn);
 function end(){
@@ -700,7 +702,7 @@ async function poll(){
       if(nl==='none'&&Date.now()-LS.get('annT',0)>3*3600e3){
         LS.set('ann','none'); // відбій застарів (>3 год) — не озвучуємо
       }else if(voice!==want&&!queue.includes(want)){
-        queue=queue.filter(x=>!x.startsWith('alarm')&&x!=='clear');
+        queue=queue.filter(x=>!x.startsWith('alarm')&&x!=='clear'&&!x.startsWith('ong'));
         enqueue(want);
       }
     }
@@ -711,6 +713,16 @@ async function poll(){
   }
 }
 setInterval(poll,CFG.POLL_MS);
+
+// ---------- «Триває тривога» кожні 15 хв (червона/жовта) ----------
+setInterval(()=>{
+  if(lvl!=='red'&&lvl!=='yellow')return;
+  if(LS.get('ann','none')!==lvl)return; // спочатку має прозвучати сама тривога
+  const key=lvl==='red'?'ong_r':'ong_y';
+  if(Date.now()-LS.get('ongT',0)<CFG.ONGOING_MS)return;
+  if(voice===key||queue.includes(key))return;
+  enqueue(key); // як звичайне оповіщення: музика/радіо зупиняються на час озвучення
+},10000);
 
 // ---------- годинник ----------
 const [sh,sm]=CFG.SILENCE.split(':').map(Number),st=sh*60+sm;
@@ -854,7 +866,8 @@ $('fM').onchange=e=>importFiles('music',e.target.files);
 $('fS').onchange=e=>importFiles('sig',e.target.files);
 
 const RX={alarm_r:/червон|red/i,alarm_y:/жовт|yellow/i,alarm:/тривог|alarm|alert|siren/i,clear:/відбій|відбой|vidbiy|clear/i,silence:/мовч|silen|minute|хвилин/i};
-const MAPKEYS=Object.keys(RX);
+const MAPKEYS=['alarm_r','alarm_y','alarm','clear','silence','ong_r','ong_y'];
+const ONG=/триває|тривають|ongoing|continu/i;
 
 async function refresh(){
   tracks=nsort(await keys('music'));
@@ -866,8 +879,13 @@ async function refresh(){
   metas.forEach(({k, m}) => { if(m) trackMeta[k] = m; });
 
   for(const k of MAPKEYS){
-    if(!map[k]||!sigNames.includes(map[k]))
-      map[k]=sigNames.find(n=>RX[k].test(n)&&(k!=='alarm'||!(RX.alarm_r.test(n)||RX.alarm_y.test(n)||RX.clear.test(n))))||'';
+    if(!map[k]||!sigNames.includes(map[k])){
+      let c;
+      if(k==='ong_r')c=sigNames.find(n=>ONG.test(n)&&RX.alarm_r.test(n))||sigNames.find(n=>ONG.test(n)&&!RX.alarm_y.test(n));
+      else if(k==='ong_y')c=sigNames.find(n=>ONG.test(n)&&RX.alarm_y.test(n))||sigNames.find(n=>ONG.test(n)&&!RX.alarm_r.test(n));
+      else c=sigNames.find(n=>RX[k].test(n)&&!ONG.test(n)&&(k!=='alarm'||!(RX.alarm_r.test(n)||RX.alarm_y.test(n)||RX.clear.test(n))));
+      map[k]=c||'';
+    }
   }
   LS.set('map',map);
   $('maps').innerHTML='';
@@ -886,7 +904,7 @@ async function refresh(){
 
 // ---------- кнопки ----------
 $('tR').onclick=()=>enqueue('alarm_r',1);$('tY').onclick=()=>enqueue('alarm_y',1);$('tA').onclick=()=>enqueue('alarm',1);
-$('tC').onclick=()=>enqueue('clear',1);$('tS').onclick=()=>enqueue('silence',1);
+$('tC').onclick=()=>enqueue('clear',1);$('tOR').onclick=()=>enqueue('ong_r',1);$('tOY').onclick=()=>enqueue('ong_y',1);$('tS').onclick=()=>enqueue('silence',1);
 $('reset').onclick=()=>{LS.set('ti',0);LS.set('tp',0);ti=0;hist=[];M.removeAttribute('src');playMusic()};
 $('start').onclick=()=>{started=true;$('start').style.display='none';pump()};
 document.addEventListener('click',()=>{if(!started){started=true;pump()}},{once:true});
