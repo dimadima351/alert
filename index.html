@@ -92,6 +92,13 @@ input[type=checkbox]{width:22px;height:22px;vertical-align:middle;margin-right:6
 
 <div class="mut"><span class="dot" id="dot"></span><span id="api">API: ще не перевірено</span></div>
 
+<!-- Bluetooth-колонка -->
+<div class="card" style="border:1px solid #2a7da8;">
+<label><input type="checkbox" id="btOnly"><b>🎧 Грати лише при підключеній Bluetooth-колонці</b></label>
+<div class="mut">Галочка стоїть: якщо колонка не підключена (або Bluetooth вимкнено) — не грає нічого (музика, радіо, тривоги, оповіщення). Колонку підключили — все продовжується, а пропущена тривога озвучується. Галочка знята — усе працює як раніше. Якщо стан Bluetooth визначити неможливо (не Fully Kiosk), програма не блокує звук.</div>
+<div class="mut" id="btDebug"></div>
+</div>
+
 <!-- Гучність сигналів -->
 <div class="card">
 <b>Гучність сигналів</b><br>
@@ -187,6 +194,8 @@ let tracks=[],trackMeta={},ti=LS.get('ti',0),started=false,voice=null,queue=[],l
 let userPaused=false,mode=LS.get('mode','seq'),hist=[];
 let map=LS.get('map',{}),sigNames=[];
 let radioIsPlaying=false, radioWasPlayingDuringVoice=false;
+let btOnly=LS.get('btOnly',true),btState='unknown',btWasBlocked=false;
+function btBlocked(){return btOnly&&(btState==='off'||btState==='none')}
 let schedOn=LS.get('sched',false), schedRadio=false, radioCool=0, radioStarting=false, rAlive=0;
 const KEY={red:'alarm_r',yellow:'alarm_y',normal:'alarm'};
 const VL={alarm_r:'red',alarm_y:'yellow',alarm:'normal'};
@@ -257,8 +266,12 @@ function updateTopBar() {
   
   let modeText = '⏳ Очікування';
   let isLocal = false;
+  const btBlk = btBlocked();
 
-  if (radioIsPlaying) {
+  if (btBlk) {
+    modeText = '🔇 Чекаю BT-колонку';
+    isLocal = true;
+  } else if (radioIsPlaying) {
     modeText = schedRadio ? '📻 Радіо за розкладом' : '📻 Радіо (Онлайн)';
   } else if (started) {
     if (userPaused) {
@@ -284,31 +297,70 @@ function updateTopBar() {
 }
 
 // ---------- Bluetooth ----------
+function connFlag(d){
+  if(!d||typeof d!=='object')return null;
+  let seen=false,val=false;
+  for(const k in d){
+    if(!/connect/i.test(k))continue;
+    seen=true;const v=d[k];
+    if(v===true||v===1||/^(true|1|connected|yes)$/i.test(String(v))||(/state/i.test(k)&&v===2))val=true;
+  }
+  return seen?val:null;
+}
+function applyBtGate(){
+  const now=btBlocked();
+  if(now){
+    M.pause();R.pause();
+    if(voice){V.pause();V.removeAttribute('src');voice=null}
+    queue=[];
+    setState();
+  }else if(btWasBlocked){
+    if(!userPaused){
+      if(radioIsPlaying)R.play().catch(()=>{});else playMusic();
+    }
+    poll(); // тривога, яку пропустили, озвучиться зараз
+    setState();
+  }
+  btWasBlocked=now;
+}
 async function updateBt(){
   const el=$('btStat');
-  let txt='🔵 BT: невідомо',col='var(--mut)';
+  let txt='🔵 BT: невідомо',col='var(--mut)',st='unknown',dbg='';
   try{
     if(window.fully&&typeof fully.isBluetoothEnabled==='function'){
-      if(!fully.isBluetoothEnabled()){txt='🔵 BT: вимкнено';col='var(--bad)'}
+      if(!fully.isBluetoothEnabled()){txt='🔵 BT: вимкнено';col='var(--bad)';st='off'}
       else{
         txt='🔵 BT: увімкнено';col='var(--ok)';
         if(typeof fully.btGetDeviceListJson==='function'){
-          let list=[];
-          try{list=JSON.parse(fully.btGetDeviceListJson()||'[]')}catch(e){}
-          if(!Array.isArray(list))list=list.devices||[];
-          const on=list.filter(d=>d&&(d.connected===true||d.isConnected===true||d.connectionState==='connected'||/^connected$/i.test(String(d.state||d.connectionState||''))));
-          if(on.length){txt='🎧 BT: '+on.map(d=>d.name||d.deviceName||d.mac||'пристрій').join(', ')}
-          else{txt='🔵 BT: увімк., нічого не підключено';col='#e67300'}
+          let list=[],raw='';
+          try{raw=fully.btGetDeviceListJson()||'[]';list=JSON.parse(raw)}catch(e){list=null}
+          if(list&&!Array.isArray(list))list=list.devices||[];
+          if(raw)dbg='btGetDeviceListJson: '+String(raw).slice(0,300);
+          if(Array.isArray(list)){
+            const flags=list.map(connFlag);
+            const known=flags.some(f=>f!==null);
+            if(list.length===0||known){
+              const on=list.filter((d,i)=>flags[i]===true);
+              if(on.length){txt='🎧 BT: '+on.map(d=>d.name||d.deviceName||d.mac||'пристрій').join(', ');st='connected'}
+              else{txt='🔵 BT: увімк., колонку не підключено';col='#e67300';st='none'}
+            }
+          }
         }
       }
     }else if(navigator.bluetooth&&navigator.bluetooth.getAvailability){
       const a=await navigator.bluetooth.getAvailability();
-      txt=a?'🔵 BT: доступний':'🔵 BT: недоступний';col=a?'var(--ok)':'var(--bad)';
+      txt=a?'🔵 BT: доступний (стан колонки невідомий)':'🔵 BT: недоступний';col=a?'var(--ok)':'var(--bad)';
     }
   }catch(e){}
+  btState=st;
   el.textContent=txt;el.style.color=col;
+  $('btDebug').textContent=dbg;
+  applyBtGate();
+  updateTopBar();
 }
-setInterval(updateBt,5000);updateBt();
+$('btOnly').checked=btOnly;
+$('btOnly').onchange=e=>{btOnly=e.target.checked;LS.set('btOnly',btOnly);applyBtGate();updateTopBar()};
+setInterval(updateBt,3000);updateBt();
 
 window.addEventListener('online', updateTopBar);
 window.addEventListener('offline', updateTopBar);
@@ -381,7 +433,7 @@ async function loadTrack(i,pos){
 
 // ГОЛОВНА ФУНКЦІЯ ВІДТВОРЕННЯ
 async function playMusic(){
-  if(voice||userPaused||radioIsPlaying||radioStarting)return;
+  if(voice||userPaused||radioIsPlaying||radioStarting||btBlocked())return;
   // Радіо за розкладом: у вікні радіо музика не вмикається, замість неї стартує радіо
   if(shouldRadioNow()){startSchedRadio();return}
   
@@ -478,6 +530,7 @@ async function startStream(url,name){
 async function playRadio(idx) {
   const st=RADIO_STATIONS[idx];
   if(!st)return;
+  if(btBlocked()){$('radioStatus').textContent='Немає підключення Bluetooth-колонки';return}
   
   M.pause(); M.removeAttribute('src');
   V.pause(); V.removeAttribute('src'); voice=null;
@@ -531,7 +584,7 @@ function inRadioWindow(){
   return SLOTS.some(([a,b])=>m>=a&&m<b);
 }
 function shouldRadioNow(){
-  return schedOn&&!userPaused&&inRadioWindow()&&navigator.onLine&&Date.now()>radioCool;
+  return schedOn&&!btBlocked()&&!userPaused&&inRadioWindow()&&navigator.onLine&&Date.now()>radioCool;
 }
 function stopSchedRadio(){
   R.pause();R.removeAttribute('src');R.dataset.name='';
@@ -619,6 +672,7 @@ let voiceIsTest=false;const testKeys=new Set();
 const ORDER=['silence','alarm_r','alarm_y','alarm','clear','ong_r','ong_y','ad1','ad2','ad3'];
 async function pump(){
   if(voice)return;
+  if(btBlocked()){queue=[];return} // нема BT-колонки: нічого не граємо (пропущена тривога перепоставиться після підключення)
   const k=ORDER.find(x=>queue.includes(x));
   
   // Якщо черга порожня - запускаємо музику (або радіо, якщо музики немає)
@@ -737,7 +791,7 @@ setInterval(()=>{
 let lastT=-1,still=0;
 setInterval(()=>{
   // Якщо стоїть пауза, грає тривога, або завантажується черга - не втручаємось
-  if(!started||userPaused||voice||queue.length)return;
+  if(!started||userPaused||voice||queue.length||btBlocked())return;
   
   // Якщо має грати радіо, але воно мовчить - перезапускаємо
   if (radioIsPlaying) {
@@ -761,7 +815,7 @@ setInterval(()=>{
 
 // ---------- перевірка кожні 10 хв: чи щось грає ----------
 setInterval(()=>{
-  if(!started||userPaused||voice||queue.length)return; // під час оповіщення не втручаємось
+  if(!started||userPaused||voice||queue.length||btBlocked())return; // під час оповіщення не втручаємось
   if(radioIsPlaying){
     if(R.paused){
       R.play().catch(()=>{
